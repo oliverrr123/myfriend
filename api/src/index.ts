@@ -27,7 +27,7 @@ app.post("/api/initCall", authenticateApiKey, async (req, res) => {
 
   const { data, error } = await supabase
     .from("users")
-    .select("first_name")
+    .select("nickname_vocative")
     .eq("phone_number", caller_id)
     .maybeSingle();
 
@@ -36,9 +36,10 @@ app.post("/api/initCall", authenticateApiKey, async (req, res) => {
   let message;
 
   if (data) {
-    message = `Welcome back, ${data.first_name}!`;
+    message = `Vítej zpět, ${data.nickname_vocative}!`;
   } else {
-    message = "Welcome, new user!";
+    message = "Ahoj, tady DigiPřítel, jak se jmenuješ ty?";
+    await supabase.from("users").insert({ phone_number: caller_id });
   }
 
   res.json({
@@ -52,6 +53,47 @@ app.post("/api/initCall", authenticateApiKey, async (req, res) => {
       },
     },
   });
+});
+
+// Update user's first name
+app.post("/api/updateFirstName", authenticateApiKey, async (req, res) => {
+  const { caller_id, first_name, first_name_vocative } = req.body;
+
+  if (!caller_id || !first_name || !first_name_vocative)
+    return res
+      .status(400)
+      .json({ error: "Missing caller_id, first_name, or first_name_vocative" });
+
+  const { error } = await supabase
+    .from("users")
+    .update({
+      first_name: first_name,
+      first_name_vocative: first_name_vocative,
+    })
+    .eq("phone_number", caller_id);
+
+  if (error) return res.status(500).json({ error: error.message });
+
+  res.json({ message: "Name updated successfully" });
+});
+
+// Update user's nickname
+app.post("/api/updateNickname", authenticateApiKey, async (req, res) => {
+  const { caller_id, nickname, nickname_vocative } = req.body;
+
+  if (!caller_id || !nickname || !nickname_vocative)
+    return res
+      .status(400)
+      .json({ error: "Missing caller_id, nickname, or nickname_vocative" });
+
+  const { error } = await supabase
+    .from("users")
+    .update({ nickname: nickname, nickname_vocative: nickname_vocative })
+    .eq("phone_number", caller_id);
+
+  if (error) return res.status(500).json({ error: error.message });
+
+  res.json({ message: "Nickname updated successfully" });
 });
 
 // Start server
