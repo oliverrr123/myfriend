@@ -4,7 +4,7 @@ import { supabase } from "./lib/supabase";
 import { authenticateApiKey } from "./middleware/auth";
 
 const app = express();
-const PORT = process.env.PORT || 3001;
+const PORT = Number(process.env.PORT) || 3001;
 
 // Middleware
 app.use(cors());
@@ -39,6 +39,6 @@ app.post("/api/initCall", authenticateApiKey, async (req, res) => {
 });
 
 // Start server
-app.listen(PORT, () => {
+app.listen(PORT, "0.0.0.0", () => {
   console.log(`🚀 Server running on http://localhost:${PORT}`);
 });
