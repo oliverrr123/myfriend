@@ -19,23 +19,39 @@ app.get("/health", (req, res) => {
 
 // Identify the user by phone number
 app.post("/api/initCall", authenticateApiKey, async (req, res) => {
-  const { phoneNumber } = req.body;
+  const { caller_id } = req.body;
+
+  if (!caller_id) return res.status(400).json({ error: "Missing caller_id" });
+
+  console.log(caller_id);
+
   const { data, error } = await supabase
     .from("users")
     .select("first_name")
-    .eq("phone_number", phoneNumber)
+    .eq("phone_number", caller_id)
     .maybeSingle();
-
-  console.log(data);
-  console.log(phoneNumber);
 
   if (error) return res.status(500).json({ error: error.message });
 
+  let message;
+
   if (data) {
-    res.json({ message: `Welcome back, ${data.first_name}!` });
+    message = `Welcome back, ${data.first_name}!`;
   } else {
-    res.json({ message: "Welcome, new user!" });
+    message = "Welcome, new user!";
   }
+
+  res.json({
+    type: "conversation_initiation_client_data",
+    dynamic_variables: {
+      caller_id: caller_id,
+    },
+    conversation_config_override: {
+      agent: {
+        first_message: message,
+      },
+    },
+  });
 });
 
 // Start server
