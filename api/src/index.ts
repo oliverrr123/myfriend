@@ -1,8 +1,7 @@
-import express from 'express';
-import cors from 'cors';
-import dotenv from 'dotenv';
-
-dotenv.config();
+import express from "express";
+import cors from "cors";
+import { supabase } from "./lib/supabase";
+import { authenticateApiKey } from "./middleware/auth";
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -11,17 +10,35 @@ const PORT = process.env.PORT || 3001;
 app.use(cors());
 app.use(express.json());
 
-// Health check
-app.get('/health', (req, res) => {
-    res.json({ status: 'ok', timestamp: new Date().toISOString() });
+// Health check (public)
+app.get("/health", (req, res) => {
+  res.json({ status: "ok", timestamp: new Date().toISOString() });
 });
 
-// Example route
-app.get('/api/hello', (req, res) => {
-    res.json({ message: 'Hello from Express API!' });
+// Protected routes - require API key
+
+// Identify the user by phone number
+app.post("/api/initCall", authenticateApiKey, async (req, res) => {
+  const { phoneNumber } = req.body;
+  const { data, error } = await supabase
+    .from("users")
+    .select("first_name")
+    .eq("phone_number", phoneNumber)
+    .maybeSingle();
+
+  console.log(data);
+  console.log(phoneNumber);
+
+  if (error) return res.status(500).json({ error: error.message });
+
+  if (data) {
+    res.json({ message: `Welcome back, ${data.first_name}!` });
+  } else {
+    res.json({ message: "Welcome, new user!" });
+  }
 });
 
 // Start server
 app.listen(PORT, () => {
-    console.log(`🚀 Server running on http://localhost:${PORT}`);
+  console.log(`🚀 Server running on http://localhost:${PORT}`);
 });
