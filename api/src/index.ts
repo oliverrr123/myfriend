@@ -368,6 +368,62 @@ app.post("/api/createReminder", authenticateApiKey, async (req, res) => {
   }
 });
 
+// Create a reminder
+app.delete("/api/deleteReminder", authenticateApiKey, async (req, res) => {
+  const {
+    caller_id,
+    cron_job_id
+  } = req.body;
+
+  // Validate required fields with detailed error messages
+  if (!caller_id) {
+    return res.status(400).json({ error: "Missing caller_id" });
+  }
+  if (!cron_job_id) {
+    return res.status(400).json({ error: "Missing cron_job_id" });
+  }
+
+  try {
+    // Delete reminder from database
+    const { error: deleteError } = await supabase
+      .from("reminders")
+      .delete()
+      .eq("cron_job_id", cron_job_id)
+      .eq("phone_number", caller_id);
+
+    if (deleteError) {
+      console.error("Database error:", deleteError);
+      return res.status(500).json({ error: "Failed to delete reminder" });
+    }
+
+    // Get the deployed API URL from environment
+    const apiUrl =
+      process.env.API_URL || "https://api-nameless-water-1932.fly.dev";
+
+    // Create cron job on cron-job.org that calls our webhook with the reminder ID
+    const cronJobResponse = await fetch("https://api.cron-job.org/jobs/" + cron_job_id, {
+      method: "DELETE",
+      headers: {
+        Authorization: `Bearer ${process.env.CRONJOB_API_KEY}`,
+        "Content-Type": "application/json",
+      }
+    });
+
+    if (!cronJobResponse.ok) {
+      const errorData = await cronJobResponse.text();
+      console.error("Cron-job.org error:", errorData);
+      return res.status(500).json({ error: "Failed to delete cron job" });
+    }
+
+    res.json({
+      message: "Reminder deleted successfully",
+    });
+  } catch (error) {
+    console.error("Error deleting reminder:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
 // Start server
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`🚀 Server running on http://localhost:${PORT}`);
