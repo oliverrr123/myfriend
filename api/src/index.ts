@@ -161,6 +161,33 @@ app.post("/api/updateNickname", authenticateApiKey, async (req, res) => {
   res.json({ message: "Nickname updated successfully" });
 });
 
+// List reminders
+app.get("/api/listReminders", authenticateApiKey, async (req, res) => {
+  const caller_id = req.headers['caller_id'];
+
+  if (!caller_id) {
+    return res.status(400).json({ error: "Missing caller_id" });
+  }
+
+  try {
+    const { data: reminders, error: dbError } = await supabase
+      .from("reminders")
+      .select("*")
+      .eq("phone_number", caller_id)
+      .order("date", { ascending: true });
+
+    if (dbError) {
+      console.error("Database error:", dbError);
+      return res.status(500).json({ error: "Failed to fetch reminders" });
+    }
+
+    res.json({ reminders: reminders || [] });
+  } catch (error) {
+    console.error("Error fetching reminders:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
 // Create a reminder
 app.post("/api/createReminder", authenticateApiKey, async (req, res) => {
   const {
