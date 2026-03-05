@@ -369,11 +369,191 @@ app.post("/api/createReminder", authenticateApiKey, async (req, res) => {
 });
 
 // Create a reminder
+app.post("/api/updateReminder", authenticateApiKey, async (req, res) => {
+  var {
+    caller_id,
+    cron_job_id,
+    reminder_text,
+    time_hour,
+    time_minute,
+    date,
+    end_date,
+    frequency,
+    weekdays,
+  } = req.body;
+
+  if (!caller_id) {
+    return res.status(400).json({ error: "Missing caller_id" });
+  }
+  if (!cron_job_id) {
+    return res.status(400).json({ error: "Missing cron_job_id" });
+  }
+
+  try {
+    const { data: reminder, error: dbError } = await supabase
+      .from("reminders")
+      .select("*")
+      .eq("phone_number", caller_id)
+      .eq("cron_job_id", cron_job_id)
+      .single();
+
+    if (dbError || !reminder) {
+      console.error("Database error:", dbError);
+      return res.status(404).json({ error: "Reminder not found" });
+    }
+
+    // Fill in any missing fields from the existing reminder
+    if (!reminder_text) reminder_text = reminder.text;
+    if (time_hour === undefined || time_hour === null) time_hour = reminder.time_hour;
+    if (time_minute === undefined || time_minute === null) time_minute = reminder.time_minute;
+    if (!date) date = reminder.date;
+    if (!frequency) frequency = reminder.frequency;
+    if (!end_date) end_date = reminder.end_date;
+    if (!weekdays) weekdays = reminder.weekdays;
+  } catch (error) {
+    console.error("Error fetching reminder:", error);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+
+  // Build schedule based on frequency
+  const reminderDate = new Date(date);
+
+  // Format expiresAt as YYYYMMDDhhmmss (cron-job.org format)
+  const formatExpiresAt = (date: Date): number => {
+    if (!date || date.getTime() <= 0) return 0;
+    const d = new Date(date);
+    d.setHours(23, 59, 59, 999); // End of day
+    const year = d.getFullYear();
+    const month = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    const hour = String(d.getHours()).padStart(2, "0");
+    const minute = String(d.getMinutes()).padStart(2, "0");
+    const second = String(d.getSeconds()).padStart(2, "0");
+    return parseInt(`${year}${month}${day}${hour}${minute}${second}`);
+  };
+
+  // For "once": no expiration needed
+  // For recurring with end_date: use end_date
+  // For recurring without end_date: no expiration (runs indefinitely)
+  let expiresAt = 0;
+  if (frequency !== "once" && end_date) {
+    const endDate = new Date(end_date);
+    expiresAt = formatExpiresAt(endDate);
+  }
+
+  const base = {
+    timezone: "Europe/Prague",
+    hours: [parseInt(time_hour)],
+    minutes: [parseInt(time_minute)],
+  };
+
+  const schedules = {
+    once: {
+      ...base,
+      mdays: [reminderDate.getDate()],
+      months: [reminderDate.getMonth() + 1],
+      wdays: [-1],
+    },
+    daily: { ...base, expiresAt, mdays: [-1], months: [-1], wdays: [-1] },
+    weekly: {
+      ...base,
+      expiresAt,
+      mdays: [-1],
+      months: [-1],
+      wdays: weekdays || [reminderDate.getDay()],
+    },
+    monthly: {
+      ...base,
+      expiresAt,
+      mdays: [reminderDate.getDate()],
+      months: [-1],
+      wdays: [-1],
+    },
+    yearly: {
+      ...base,
+      expiresAt,
+      mdays: [reminderDate.getDate()],
+      months: [reminderDate.getMonth() + 1],
+      wdays: [-1],
+    },
+  };
+
+  const schedule = schedules[frequency as keyof typeof schedules];
+  if (!schedule) {
+    return res.status(400).json({
+      error: "Invalid frequency. Use: once, daily, weekly, monthly, or yearly",
+    });
+  }
+
+  try {
+    // Update reminder in database
+    const { data: updatedReminder, error: updateError } = await supabase
+      .from("reminders")
+      .update({
+        text: reminder_text,
+        time_hour: time_hour,
+        time_minute: time_minute,
+        date: date,
+        end_date: end_date || null,
+        frequency: frequency,
+        weekdays: weekdays ? weekdays.join(",") : null,
+      })
+      .eq("cron_job_id", cron_job_id)
+      .eq("phone_number", caller_id)
+      .select()
+      .single();
+
+    if (updateError || !updatedReminder) {
+      console.error("Database error:", updateError);
+      return res.status(500).json({ error: "Failed to update reminder" });
+    }
+
+    // Get the deployed API URL from environment
+    const apiUrl =
+      process.env.API_URL || "https://api-nameless-water-1932.fly.dev";
+
+    // Update the existing cron job on cron-job.org using PATCH
+    const cronJobResponse = await fetch(
+      `https://api.cron-job.org/jobs/${cron_job_id}`,
+      {
+        method: "PATCH",
+        headers: {
+          Authorization: `Bearer ${process.env.CRONJOB_API_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          job: {
+            title: `Reminder for ${caller_id}: ${reminder_text}`,
+            url: `${apiUrl}/api/webhook/reminder?id=${updatedReminder.id}`,
+            schedule: schedule,
+          },
+        }),
+      }
+    );
+
+    if (!cronJobResponse.ok) {
+      const errorData = await cronJobResponse.text();
+      console.error("Cron-job.org error:", errorData);
+      return res.status(500).json({ error: "Failed to update cron job" });
+    }
+
+    res.json({
+      message: "Reminder updated successfully",
+      reminder_id: updatedReminder.id,
+      cron_job_id: cron_job_id,
+    });
+  } catch (error) {
+    console.error("Error updating reminder:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// Create a reminder
 app.delete("/api/deleteReminder", authenticateApiKey, async (req, res) => {
   const {
     caller_id,
     cron_job_id
-  } = req.body;
+  } = req.query;
 
   // Validate required fields with detailed error messages
   if (!caller_id) {
