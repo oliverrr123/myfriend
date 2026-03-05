@@ -369,7 +369,7 @@ app.post("/api/createReminder", authenticateApiKey, async (req, res) => {
 });
 
 // Create a reminder
-app.post("/api/updateReminder", authenticateApiKey, async (req, res) => {
+app.patch("/api/updateReminder", authenticateApiKey, async (req, res) => {
   var {
     caller_id,
     cron_job_id,
