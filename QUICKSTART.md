@@ -41,13 +41,34 @@ CREATE TABLE users (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   email VARCHAR(255) UNIQUE,
   first_name VARCHAR(100),
+  first_name_vocative VARCHAR(100),
   last_name VARCHAR(100),
+  nickname VARCHAR(100),
+  nickname_vocative VARCHAR(100),
   phone_number VARCHAR(20),
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
   updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
 CREATE INDEX idx_users_phone_number ON users(phone_number);
+
+CREATE TABLE reminders (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  user_id UUID REFERENCES users(id),
+  phone_number VARCHAR(20) NOT NULL,
+  text TEXT NOT NULL,
+  time_hour INT2 NOT NULL,
+  time_minute INT2 NOT NULL,
+  date TIMESTAMPTZ NOT NULL,
+  end_date TIMESTAMPTZ,
+  frequency VARCHAR(20) NOT NULL,
+  weekdays VARCHAR(50),
+  cron_job_id VARCHAR(50)
+);
+
+CREATE INDEX idx_reminders_phone_number ON reminders(phone_number);
+CREATE INDEX idx_reminders_cron_job_id ON reminders(cron_job_id);
 ```
 
 ### 5. Start the Server
@@ -96,6 +117,11 @@ Choose:
 fly secrets set SUPABASE_URL="https://your-project.supabase.co"
 fly secrets set SUPABASE_SECRET_KEY="your-secret-key"
 fly secrets set API_KEY="your-generated-api-key"
+fly secrets set API_URL="https://your-app-name.fly.dev"
+fly secrets set CRONJOB_API_KEY="your-cronjob-api-key"
+fly secrets set ELEVENLABS_API_KEY="your-elevenlabs-api-key"
+fly secrets set ELEVENLABS_AGENT_ID="your-agent-id"
+fly secrets set ELEVENLABS_PHONE_ID="your-phone-id"
 ```
 
 ### 5. Deploy
@@ -125,25 +151,12 @@ curl -H "x-api-key: YOUR_API_KEY" \
   https://your-app.fly.dev/api/users
 ```
 
-### Example: Create a User
-```bash
-curl -X POST https://your-app.fly.dev/api/users \
-  -H "x-api-key: YOUR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "John Doe",
-    "email": "john@example.com"
-  }'
-```
-
 ### Example: Initialize Call
 ```bash
 curl -X POST https://your-app.fly.dev/api/initCall \
   -H "x-api-key: YOUR_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{
-    "phoneNumber": "+1234567890"
-  }'
+  -d '{"caller_id": "+1234567890"}'
 ```
 
 ## 🛠 Useful Commands
@@ -173,6 +186,11 @@ fly ssh console         # SSH into machine
 | `API_KEY` | Yes | Your API authentication key |
 | `SUPABASE_URL` | Yes | Supabase project URL |
 | `SUPABASE_SECRET_KEY` | Yes | Supabase secret key |
+| `API_URL` | Yes | Deployed API URL (for webhook callbacks) |
+| `CRONJOB_API_KEY` | Yes | cron-job.org API key |
+| `ELEVENLABS_API_KEY` | Yes | ElevenLabs API key |
+| `ELEVENLABS_AGENT_ID` | Yes | ElevenLabs agent ID |
+| `ELEVENLABS_PHONE_ID` | Yes | ElevenLabs phone number ID |
 | `PORT` | No | Server port (default: 3001) |
 | `NODE_ENV` | No | Environment (default: development) |
 

@@ -347,6 +347,101 @@ Weekly reminder (Mondays and Wednesdays):
 }
 ```
 
+#### List Reminders
+```
+GET /api/listReminders
+```
+Fetch all reminders for a user.
+
+**Headers:**
+- `Authorization: Bearer YOUR_API_KEY` or `x-api-key: YOUR_API_KEY`
+- `caller_id: +1234567890`
+
+**Response:**
+```json
+{
+  "reminders": [
+    {
+      "id": "695cc382-fe8a-4e25-8d21-16d89b1908e6",
+      "phone_number": "+1234567890",
+      "text": "vzít si léky",
+      "time_hour": 8,
+      "time_minute": 30,
+      "date": "2026-02-01T00:00:00Z",
+      "frequency": "daily",
+      "cron_job_id": 12345
+    }
+  ]
+}
+```
+
+#### Delete Reminder
+```
+DELETE /api/deleteReminder
+```
+Delete a reminder from the database and cancel its cron job.
+
+**Headers:**
+- `Authorization: Bearer YOUR_API_KEY` or `x-api-key: YOUR_API_KEY`
+- `Content-Type: application/json`
+
+**Request Body:**
+```json
+{
+  "caller_id": "+1234567890",
+  "cron_job_id": 12345
+}
+```
+
+**Response:**
+```json
+{
+  "message": "Reminder deleted successfully",
+  "reminder_id": "695cc382-fe8a-4e25-8d21-16d89b1908e6"
+}
+```
+
+#### Update Reminder
+```
+PATCH /api/updateReminder
+```
+Update an existing reminder. Only include the fields you want to change — omitted fields are kept as-is.
+
+**Headers:**
+- `Authorization: Bearer YOUR_API_KEY` or `x-api-key: YOUR_API_KEY`
+- `Content-Type: application/json`
+
+**Request Body:**
+```json
+{
+  "caller_id": "+1234567890",
+  "cron_job_id": 12345,
+  "reminder_text": "vzít si Paralen",
+  "time_hour": 9,
+  "time_minute": 0,
+  "date": "2026-02-01T00:00:00Z",
+  "frequency": "daily",
+  "end_date": "2026-12-31T00:00:00Z",
+  "weekdays": [1, 3, 5]
+}
+```
+
+**Required Fields:**
+- `caller_id` - Phone number of the user
+- `cron_job_id` - ID of the cron job to update
+
+**Optional Fields** (unchanged fields are preserved from existing reminder):
+- `reminder_text`, `time_hour`, `time_minute`, `date`, `frequency`, `end_date`, `weekdays`
+
+**Response:**
+```json
+{
+  "message": "Reminder updated successfully",
+  "reminder_id": "695cc382-fe8a-4e25-8d21-16d89b1908e6",
+  "cron_job_id": 12345
+}
+```
+
 #### Reminder Webhook (Internal)
 ```
 GET /api/webhook/reminder?id=<reminder_id>
@@ -489,8 +584,9 @@ All errors return JSON with an `error` field:
 
 HTTP Status Codes:
 - `200` - Success
-- `201` - Created
+- `400` - Bad Request (missing/invalid fields)
 - `401` - Unauthorized (invalid/missing API key)
+- `404` - Not Found
 - `500` - Internal Server Error
 
 ## Scripts
@@ -502,11 +598,12 @@ HTTP Status Codes:
 
 ## How Reminders Work
 
-1. **Create Reminder**: POST to `/api/createReminder` with reminder details
-2. **Save to Database**: Reminder is stored in Supabase with unique ID
-3. **Create Cron Job**: A cron job is created on cron-job.org that calls your webhook
-4. **Scheduled Execution**: cron-job.org calls `/api/webhook/reminder?id=<reminder_id>` at scheduled times
-5. **Fetch & Call**: Webhook fetches reminder from database and triggers ElevenLabs outbound call
+1. **Create**: `POST /api/createReminder` saves to Supabase and creates a cron job on cron-job.org
+2. **List**: `GET /api/listReminders` fetches all reminders for a caller from Supabase
+3. **Update**: `PATCH /api/updateReminder` updates the DB record and patches the cron job schedule via `PATCH /jobs/<id>`
+4. **Delete**: `DELETE /api/deleteReminder` removes from Supabase and deletes the cron job
+5. **Scheduled Execution**: cron-job.org calls `GET /api/webhook/reminder?id=<reminder_id>` at the scheduled time
+6. **Phone Call**: The webhook fetches the reminder from Supabase and triggers an ElevenLabs outbound call
 
 ## Additional Documentation
 
