@@ -1,4 +1,4 @@
-import { app } from "./index";
+import { app } from "./app";
 import { supabase } from "./lib/supabase";
 import { authenticateApiKey } from "./middleware/auth";
 
