@@ -16,7 +16,7 @@ app.get("/api/webhook/reminder", authenticateApiKey, async (req, res) => {
 		// Fetch reminder from database
 		const { data: reminder, error: dbError } = await supabase
 			.from("reminders")
-			.select("phone_number, text")
+			.select("phone_number, text, agent_phone_number, agent_id")
 			.eq("id", id)
 			.single();
 
@@ -24,6 +24,9 @@ app.get("/api/webhook/reminder", authenticateApiKey, async (req, res) => {
 			console.error("Database error:", dbError);
 			return res.status(404).json({ error: "Reminder not found" });
 		}
+
+		const phoneMap = JSON.parse(process.env.PHONE_NUMBER_TO_ID_MAP || "{}");
+		const agent_phone_number_id = phoneMap[reminder.agent_phone_number];
 
 		// Make the call
 		const response = await fetch(
@@ -35,8 +38,8 @@ app.get("/api/webhook/reminder", authenticateApiKey, async (req, res) => {
 					"Content-Type": "application/json",
 				},
 				body: JSON.stringify({
-					agent_id: process.env.ELEVENLABS_AGENT_ID,
-					agent_phone_number_id: process.env.ELEVENLABS_PHONE_ID,
+					agent_id: reminder.agent_id,
+					agent_phone_number_id: agent_phone_number_id,
 					to_number: reminder.phone_number,
 					conversation_initiation_client_data: {
 						dynamic_variables: {
@@ -84,6 +87,8 @@ app.post("/api/createReminder", authenticateApiKey, async (req, res) => {
 		end_date,
 		frequency,
 		weekdays,
+		agent_id,
+		agent_phone_number,
 	} = req.body;
 
 	// Validate required fields with detailed error messages
@@ -189,6 +194,8 @@ app.post("/api/createReminder", authenticateApiKey, async (req, res) => {
 				end_date: end_date || null,
 				frequency: frequency,
 				weekdays: weekdays ? weekdays.join(",") : null,
+				agent_id: agent_id,
+				agent_phone_number: agent_phone_number,
 			})
 			.select()
 			.single();
