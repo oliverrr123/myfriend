@@ -215,6 +215,7 @@ app.post("/api/createReminder", authenticateApiKey, async (req, res) => {
 				weekdays: weekdays ? weekdays.join(",") : null,
 				agent_id: agent_id,
 				agent_phone_number: agent_phone_number,
+				active: true,
 			})
 			.select()
 			.single();
