@@ -130,6 +130,20 @@ app.post("/api/createReminder", authenticateApiKey, async (req, res) => {
 		return res.status(400).json({ error: "Missing frequency" });
 	}
 
+	// Parse weekdays if it came as a string from ElevenLabs
+	let parsedWeekdays: number[] | null = null;
+	if (weekdays) {
+		if (Array.isArray(weekdays)) {
+			parsedWeekdays = weekdays.map(Number);
+		} else if (typeof weekdays === "string") {
+			parsedWeekdays = weekdays
+				.replace(/[\[\]]/g, "")
+				.split(",")
+				.map((s) => Number(s.trim()))
+				.filter((n) => !isNaN(n));
+		}
+	}
+
 	// Build schedule based on frequency
 	const reminderDate = new Date(date);
 
@@ -175,7 +189,7 @@ app.post("/api/createReminder", authenticateApiKey, async (req, res) => {
 			expiresAt,
 			mdays: [-1],
 			months: [-1],
-			wdays: weekdays || [reminderDate.getDay()],
+			wdays: parsedWeekdays || [reminderDate.getDay()],
 		},
 		monthly: {
 			...base,
@@ -212,7 +226,7 @@ app.post("/api/createReminder", authenticateApiKey, async (req, res) => {
 				date: date,
 				end_date: end_date || null,
 				frequency: frequency,
-				weekdays: weekdays ? weekdays.join(",") : null,
+				weekdays: parsedWeekdays ? parsedWeekdays.join(",") : null,
 				agent_id: agent_id,
 				agent_phone_number: agent_phone_number,
 				active: true,
@@ -357,6 +371,20 @@ app.patch("/api/updateReminder", authenticateApiKey, async (req, res) => {
 		return res.status(500).json({ error: "Internal server error" });
 	}
 
+	// Parse weekdays if it came as a string from ElevenLabs
+	let parsedWeekdays: number[] | null = null;
+	if (weekdays) {
+		if (Array.isArray(weekdays)) {
+			parsedWeekdays = weekdays.map(Number);
+		} else if (typeof weekdays === "string") {
+			parsedWeekdays = weekdays
+				.replace(/[\[\]]/g, "")
+				.split(",")
+				.map((s) => Number(s.trim()))
+				.filter((n) => !isNaN(n));
+		}
+	}
+
 	// Build schedule based on frequency
 	const reminderDate = new Date(date);
 
@@ -402,7 +430,7 @@ app.patch("/api/updateReminder", authenticateApiKey, async (req, res) => {
 			expiresAt,
 			mdays: [-1],
 			months: [-1],
-			wdays: weekdays || [reminderDate.getDay()],
+			wdays: parsedWeekdays || [reminderDate.getDay()],
 		},
 		monthly: {
 			...base,
@@ -438,7 +466,7 @@ app.patch("/api/updateReminder", authenticateApiKey, async (req, res) => {
 				date: date,
 				end_date: end_date || null,
 				frequency: frequency,
-				weekdays: weekdays ? weekdays.join(",") : null,
+				weekdays: parsedWeekdays ? parsedWeekdays.join(",") : null,
 			})
 			.eq("cron_job_id", cron_job_id)
 			.eq("phone_number", caller_id)
