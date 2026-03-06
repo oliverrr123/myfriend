@@ -16,13 +16,32 @@ app.get("/api/webhook/reminder", authenticateApiKey, async (req, res) => {
 		// Fetch reminder from database
 		const { data: reminder, error: dbError } = await supabase
 			.from("reminders")
-			.select("phone_number, text, agent_phone_number, agent_id")
+			.select("phone_number, text, agent_phone_number, agent_id, frequency, end_date")
 			.eq("id", id)
 			.single();
 
 		if (dbError || !reminder) {
 			console.error("Database error:", dbError);
 			return res.status(404).json({ error: "Reminder not found" });
+		}
+
+		// Check if reminder should be marked inactive (frequency is once, or end_date reached)
+		let shouldDeactivate = false;
+		if (reminder.frequency === "once") {
+			shouldDeactivate = true;
+		} else if (reminder.end_date) {
+			const endDate = new Date(reminder.end_date);
+			endDate.setHours(23, 59, 59, 999); // end of day
+			if (new Date() >= endDate) {
+				shouldDeactivate = true;
+			}
+		}
+
+		if (shouldDeactivate) {
+			await supabase
+				.from("reminders")
+				.update({ active: false })
+				.eq("id", id);
 		}
 
 		const phoneMap = JSON.parse(process.env.PHONE_NUMBER_TO_ID_MAP || "{}");
@@ -274,6 +293,7 @@ app.get("/api/listReminders", authenticateApiKey, async (req, res) => {
 			.from("reminders")
 			.select("*")
 			.eq("phone_number", caller_id)
+			.eq("active", true)
 			.order("date", { ascending: true });
 
 		if (dbError) {
