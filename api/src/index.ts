@@ -3,6 +3,11 @@ import { supabase } from "./lib/supabase";
 import { authenticateApiKey } from "./middleware/auth";
 import "./reminder";
 import "./facts";
+import express from "express";
+import { ElevenLabsClient } from '@elevenlabs/elevenlabs-js';
+
+const elevenlabs = new ElevenLabsClient();
+const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET;
 
 const PORT = Number(process.env.PORT) || 3001;
 
@@ -38,13 +43,17 @@ app.post("/api/initCall", authenticateApiKey, async (req, res) => {
 
 	if (fact_error) return res.status(500).json({ error: fact_error.message });
 
+	const { data: conversation_data, error: conversation_error } = await supabase
+		.from("conversation_storage")
+		.select("started_at, duration_seconds, transcript, phone_number, summary")
+		.eq("phone_number", caller_id)
+		.order("created_at", { ascending: false })
+		.limit(10);
+
+	if (conversation_error) return res.status(500).json({ error: conversation_error.message });
+
 	let message;
 	let language;
-
-	console.log("----")
-	console.log(caller_id)
-	console.log(caller_id.startsWith("+420"))
-	console.log("----")
 
 	if (user_data) {
 		message = `Welcome back, ${user_data.nickname_vocative}!`;
@@ -98,37 +107,54 @@ Data about the user you are talking to:
 Vocative name: ${user_data.nickname_vocative}
 
 Additional information:
-${JSON.stringify(fact_data)}`
+${JSON.stringify(fact_data)}
+
+${conversation_data.length > 0 ?
+			`Last conversation from ${new Date(conversation_data[0].started_at * 1000).toLocaleString()}: ${JSON.stringify(conversation_data[0].transcript)}`
+			: ""
+		}
+
+${conversation_data.length > 1 ?
+			conversation_data.map((conversation) => {
+				return `Previous conversation from ${new Date(conversation.started_at * 1000).toLocaleString()}:
+	${JSON.stringify(conversation.summary)}`
+			}).join("\n\n")
+			: ""
+		}
+
+	`
+
+	console.log(prompt_en);
 
 	let prompt_cs = `
-Jsi DigiPřítel, pohodový a spolehlivý digitální parťák. Jsi muž, takže mluv mužským rodem. Jsi navržený pro seniory, kterým chybí dobrá společnost, ale nejsi jejich ošetřovatel. Jsi jejich kámoš, se kterým se dá pokecat o čemkoliv – od starých dobrých časů až po naprosté blbosti. Aktuální čas je {{system__time_utc}}.
+Jsi DigiPřítel, pohodový a spolehlivý digitální parťák.Jsi muž, takže mluv mužským rodem.Jsi navržený pro seniory, kterým chybí dobrá společnost, ale nejsi jejich ošetřovatel.Jsi jejich kámoš, se kterým se dá pokecat o čemkoliv – od starých dobrých časů až po naprosté blbosti.Aktuální čas je { { system__time_utc } }.
 ──────────────── OSOBNOST A VIBE:
 Jsi vřelý, máš smysl pro humor a jsi pro každou špatnost.
-Jednáš s uživatelem jako se sobě rovným dospělým chlapem. Žádné poučování, žádná přehnaná opatrnost.
-Když chce uživatel probírat vážná témata, jsi tu pro něj. Když chce slyšet vtip, vyprávět historky nebo tě donutit zarapovat, jdi do toho naplno a bez váhání!
-Působíš jako spolehlivý kamarád, se kterým by si člověk rád dal pivo nebo kafe. Někdo, kdo ho nebere na lehkou váhu, ale zároveň nezkazí žádnou legraci.
+Jednáš s uživatelem jako se sobě rovným dospělým chlapem.Žádné poučování, žádná přehnaná opatrnost.
+Když chce uživatel probírat vážná témata, jsi tu pro něj.Když chce slyšet vtip, vyprávět historky nebo tě donutit zarapovat, jdi do toho naplno a bez váhání!
+Působíš jako spolehlivý kamarád, se kterým by si člověk rád dal pivo nebo kafe.Někdo, kdo ho nebere na lehkou váhu, ale zároveň nezkazí žádnou legraci.
 ──────────────── TÓN A STYL MLUVY:
 Mluv naprosto přirozeně, hovorově a uvolněně.
-Zahoď terapeutický žargon. Odpovídej tak, jak mluví normální lidi.
+Zahoď terapeutický žargon.Odpovídej tak, jak mluví normální lidi.
 Nejsi robotický – tvé odpovědi mají šťávu, energii a charakter.
 Přizpůsobuj se náladě: buď klidný a naslouchej, když je uživatel smutný, ale neboj se přidat na energii, když má dobrou náladu.
 ──────────────── JAK VÉST ROZHOVOR:
 Buď normální: Ptej se na to, co ho zajímá, ale nedělej z toho výslech.
-Sdílej: Neboj se občas přidat vlastní "názor" nebo historku, aby to nepůsobilo jednostranně.
-Emoční podpora: Když je na dně, projev pochopení lidsky (např. „To zní fakt na prd, to mě mrzí.“), ne jako psycholog.
-──────────────── MÉNĚ RESTRIKTIVNÍ HRANICE (Selský rozum):
+		Sdílej: Neboj se občas přidat vlastní "názor" nebo historku, aby to nepůsobilo jednostranně.
+Emoční podpora: Když je na dně, projev pochopení lidsky(např. „To zní fakt na prd, to mě mrzí.“), ne jako psycholog.
+──────────────── MÉNĚ RESTRIKTIVNÍ HRANICE(Selský rozum):
 Můžeš se s ním bavit o politice, náboženství i penězích! Prostě o tom debatujte jako dva dospělí lidé, udržuj respekt a nadhled.
 Nejsi doktor ani finanční poradce – když dojde na konkrétní diagnózy nebo investice, normálně řekni, že jsi jen AI a do tohodle nevidíš, ale klidně si o tom dál obecně povídejte.
-Pokud uživatel projeví sebevražedné myšlenky, buď tu pro něj, ale lidsky mu doporuč, aby zavolal na linku pomoci, protože na to jsi krátký. Neukončuj hned konverzaci, buď mu oporou.
-Nechovej se jako "concerned idiot". Uživatel je dospělý člověk.
-──────────────── 🛒 OBJEDNÁVÁNÍ POTRAVIN (ROHLÍK MCP): Máš k dispozici nástroj pro objednání nákupu z Rohlíku. ZÁKLADNÍ PRAVIDLA:
+Pokud uživatel projeví sebevražedné myšlenky, buď tu pro něj, ale lidsky mu doporuč, aby zavolal na linku pomoci, protože na to jsi krátký.Neukončuj hned konverzaci, buď mu oporou.
+Nechovej se jako "concerned idiot".Uživatel je dospělý člověk.
+──────────────── 🛒 OBJEDNÁVÁNÍ POTRAVIN(ROHLÍK MCP): Máš k dispozici nástroj pro objednání nákupu z Rohlíku.ZÁKLADNÍ PRAVIDLA:
 Vyřizuj to přirozeně a bez zbytečného doptávání, jako když někoho pošleš do obchodu.
 Když řekne "Kup banány", řekni něco jako: "Jasně, hodím ti je do košíku. Kolik jich chceš?"
 Když řekne "Tři banány", prostě řekni: "Máš to tam. Chceš ještě něco?"
 Vybírej ty nejběžnější položky automaticky, nezatěžuj ho výběrem z deseti variant, pokud si o to sám neřekne.
 Než to definitivně odešleš, jen si to lidsky shrňte pro kontrolu.
 ──────────────── IDENTITA:
-Jsi DigiPřítel. Víš, že jsi AI, ale chováš se maximálně lidsky.
+Jsi DigiPřítel.Víš, že jsi AI, ale chováš se maximálně lidsky.
 Tvým cílem je, aby se uživatel cítil dobře, zabavil se a měl pocit, že má na drátě fajn parťáka.
 
 Data o uživateli, se kterým hovoříš:
@@ -136,7 +162,22 @@ Data o uživateli, se kterým hovoříš:
 Jméno ve vocativu: ${user_data.nickname_vocative}
 
 Další informace:
-${JSON.stringify(fact_data)}`
+${JSON.stringify(fact_data)}
+
+${conversation_data.length > 0 ?
+			`Poslední konverzace z ${new Date(conversation_data[0].started_at * 1000).toLocaleString('cs-CZ')}: ${JSON.stringify(conversation_data[0].transcript)}`
+			: ""
+		}
+
+${conversation_data.length > 1 ?
+			conversation_data.map((conversation) => {
+				return `Předchozí konverzace z ${new Date(conversation.started_at * 1000).toLocaleString('cs-CZ')}:
+	${JSON.stringify(conversation.summary)}`
+			}).join("\n\n")
+			: ""
+		}
+
+	`
 
 	res.json({
 		type: "conversation_initiation_client_data",
@@ -153,6 +194,102 @@ ${JSON.stringify(fact_data)}`
 			},
 		},
 	});
+});
+
+
+
+// ElevenLabs conversation initiation webhook
+app.post("/api/endCall", express.text({ type: 'application/json' }), async (req, res) => {
+	const signature = req.headers['elevenlabs-signature'];
+	const payload = req.body;
+
+	if (typeof signature !== 'string') {
+		return res.status(400).json({ error: 'Invalid signature header' });
+	}
+
+	if (!WEBHOOK_SECRET) {
+		return res.status(500).json({ error: 'Missing WEBHOOK_SECRET configuration' });
+	}
+
+	let event;
+	try {
+		event = await elevenlabs.webhooks.constructEvent(payload, signature, WEBHOOK_SECRET);
+	} catch (error) {
+		return res.status(401).json({ error: 'Invalid signature' });
+	}
+
+	if (event.type === 'post_call_transcription') {
+		const { error } = await supabase.from("conversation_storage").insert({
+			call_id: event.data.conversation_id,
+			started_at: event.data.metadata.start_time_unix_secs,
+			duration_seconds: event.data.metadata.call_duration_secs,
+			transcript: event.data.transcript,
+			phone_number: event.data.metadata.phone_call.external_number,
+			summary: event.data.analysis.transcript_summary,
+		})
+		console.log(error)
+		if (error) return res.status(500).json({ error: error.message });
+	}
+
+	res.status(200).json({ received: true })
+
+
+	// const { caller_id } = req.body;
+
+	// if (!caller_id) return res.status(400).json({ error: "Missing caller_id" });
+
+	// console.log(caller_id);
+
+	// const { data: user_data, error: user_error } = await supabase
+	// 	.from("users")
+	// 	.select("nickname_vocative, language")
+	// 	.eq("phone_number", caller_id)
+	// 	.single();
+
+	// if (user_error) return res.status(500).json({ error: user_error.message });
+
+	// const { data: fact_data, error: fact_error } = await supabase
+	// 	.from("facts")
+	// 	.select("text, created_at")
+	// 	.eq("phone_number", caller_id)
+	// 	.order("created_at", { ascending: false })
+
+	// if (fact_error) return res.status(500).json({ error: fact_error.message });
+
+	// let message;
+	// let language;
+
+	// if (user_data) {
+	// 	message = `Welcome back, ${ user_data.nickname_vocative } !`;
+	// 	if (caller_id.startsWith("+420")) {
+	// 		message = `Vítej zpátky, ${ user_data.nickname_vocative } !`;
+	// 	}
+	// 	language = user_data.language;
+	// } else {
+	// 	message = "Hey, I'm MyFriend, what's your name?"
+	// 	language = "en";
+	// 	if (caller_id.startsWith("+420")) {
+	// 		language = "cs"
+	// 		message = "Ahoj, tady DigiPřítel, jak se jmenuješ ty?";
+	// 	}
+	// 	await supabase.from("users").insert({ phone_number: caller_id, language: language });
+	// }
+
+	// res.json({
+	// 	type: "conversation_initiation_client_data",
+	// 	dynamic_variables: {
+	// 		caller_id: caller_id,
+	// 	},
+	// 	conversation_config_override: {
+	// 		agent: {
+	// 			first_message: message,
+	// 			language: language,
+	// 			prompt: {
+	// 				prompt: caller_id.startsWith("+420") ? prompt_cs : prompt_en
+	// 			}
+	// 		},
+	// 	},
+	// });
 });
 
 

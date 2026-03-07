@@ -10,6 +10,7 @@
     "generate-secret": "node scripts/generate-secret.js"
   },
   "dependencies": {
+    "@elevenlabs/elevenlabs-js": "^2.38.1",
     "@supabase/supabase-js": "^2.93.3",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
