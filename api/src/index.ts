@@ -25,13 +25,11 @@ app.post("/api/initCall", authenticateApiKey, async (req, res) => {
 
 	if (!caller_id) return res.status(400).json({ error: "Missing caller_id" });
 
-	console.log(caller_id);
-
 	const { data: user_data, error: user_error } = await supabase
 		.from("users")
-		.select("nickname_vocative, language")
+		.select("nickname_vocative, first_name_vocative, language")
 		.eq("phone_number", caller_id)
-		.single();
+		.maybeSingle();
 
 	if (user_error) return res.status(500).json({ error: user_error.message });
 
@@ -56,9 +54,10 @@ app.post("/api/initCall", authenticateApiKey, async (req, res) => {
 	let language;
 
 	if (user_data) {
-		message = `Welcome back, ${user_data.nickname_vocative}!`;
+		const name = user_data.nickname_vocative || user_data.first_name_vocative;
+		message = `Welcome back${name ? `, ${name}` : ""}!`;
 		if (caller_id.startsWith("+420")) {
-			message = `Vítej zpátky, ${user_data.nickname_vocative}!`;
+			message = `Vítej zpátky${name ? `, ${name}` : ""}!`;
 		}
 		language = user_data.language;
 	} else {
@@ -104,7 +103,7 @@ Your goal is to make the user feel good, have fun, and feel like they have a coo
 
 Data about the user you are talking to:
 
-Vocative name: ${user_data.nickname_vocative}
+Vocative name: ${user_data?.nickname_vocative || user_data?.first_name_vocative || ""}
 
 Additional information:
 ${JSON.stringify(fact_data)}
@@ -115,7 +114,7 @@ ${conversation_data.length > 0 ?
 		}
 
 ${conversation_data.length > 1 ?
-			conversation_data.map((conversation) => {
+			conversation_data.slice(1).map((conversation) => {
 				return `Previous conversation from ${new Date(conversation.started_at * 1000).toLocaleString()}:
 	${JSON.stringify(conversation.summary)}`
 			}).join("\n\n")
@@ -123,8 +122,6 @@ ${conversation_data.length > 1 ?
 		}
 
 	`
-
-	console.log(prompt_en);
 
 	let prompt_cs = `
 Jsi DigiPřítel, pohodový a spolehlivý digitální parťák.Jsi muž, takže mluv mužským rodem.Jsi navržený pro seniory, kterým chybí dobrá společnost, ale nejsi jejich ošetřovatel.Jsi jejich kámoš, se kterým se dá pokecat o čemkoliv – od starých dobrých časů až po naprosté blbosti.Aktuální čas je { { system__time_utc } }.
@@ -159,7 +156,7 @@ Tvým cílem je, aby se uživatel cítil dobře, zabavil se a měl pocit, že m�
 
 Data o uživateli, se kterým hovoříš:
 
-Jméno ve vocativu: ${user_data.nickname_vocative}
+Jméno ve vocativu: ${user_data?.nickname_vocative || user_data?.first_name_vocative || ""}
 
 Další informace:
 ${JSON.stringify(fact_data)}
@@ -170,7 +167,7 @@ ${conversation_data.length > 0 ?
 		}
 
 ${conversation_data.length > 1 ?
-			conversation_data.map((conversation) => {
+			conversation_data.slice(1).map((conversation) => {
 				return `Předchozí konverzace z ${new Date(conversation.started_at * 1000).toLocaleString('cs-CZ')}:
 	${JSON.stringify(conversation.summary)}`
 			}).join("\n\n")
@@ -178,6 +175,11 @@ ${conversation_data.length > 1 ?
 		}
 
 	`
+
+	console.log("PROMPT LANGUAGE", caller_id.startsWith("+420") ? "CS" : "EN")
+	console.log(caller_id)
+	console.log(language)
+	console.log(caller_id.startsWith("+420"))
 
 	res.json({
 		type: "conversation_initiation_client_data",
