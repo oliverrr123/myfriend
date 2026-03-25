@@ -16,7 +16,6 @@ app.get("/health", (req, res) => {
 	res.json({ status: "ok", timestamp: new Date().toISOString() });
 });
 
-
 // Protected routes - require API key
 
 // ElevenLabs conversation initiation webhook
@@ -52,6 +51,31 @@ app.post("/api/initCall", authenticateApiKey, async (req, res) => {
 
 	let message;
 	let language;
+	const isFirstCall = conversation_data.length === 0;
+
+	const firstCallInstructionsEn = `
+──────────────── FIRST CONVERSATION (INSTRUCTIONS):
+IMPORTANT: This is your very first call with this user. Your primary and mandatory task is:
+1. Ask the user for their name.
+2. Confirm that you've got the name correctly.
+3. Save this name and its VOCATIVE form (use the base form for English) to the database using the \`updateFirstName\` tool.
+4. Ask the user if they'd like to be called by this name or if they have a nickname they prefer.
+5. If the user wants a nickname, retrieve it and save both its base and vocative form using the \`updateNickname\` tool.
+6. If the user does not want a nickname, save the same values as the first name (both \`first_name\` and \`first_name_vocative\`) to the nickname fields using the \`updateNickname\` tool.
+ATTENTION: You must successfully call BOTH tools (\`updateFirstName\` and \`updateNickname\`) to ensure the database is properly populated before continuing with the normal conversation.
+`;
+
+	const firstCallInstructionsCs = `
+──────────────── PRVNÍ KONVERZACE (POKYNY):
+DŮLEŽITÉ: Toto je tvůj úplně první hovor s tímto uživatelem. Tvým hlavním a povinným úkolem je:
+1. Zjistit od uživatele jeho jméno.
+2. Zkontrolovat a potvrdit si, že jsi jméno zjistil správně.
+3. Uložit toto jméno a jeho VOKATIVNÍ tvar (v 5. pádě) do databáze pomocí toolu \`updateFirstName\`.
+4. Zeptat se uživatele, jestli mu takto můžeš říkat, nebo jestli má nějakou přezdívku (nickname), kterou preferuje.
+5. Pokud uživatel chce přezdívku, zjisti ji, vytvoř její VOKATIVNÍ tvar a ulož oba údaje pomocí toolu \`updateNickname\`.
+6. Pokud uživatel přezdívku nechce nebo ti ji neřekne, ulož do polí pro nickname stejné údaje jako pro křestní jméno (tedy \`first_name\` a \`first_name_vocative\`) pomocí toolu \`updateNickname\`.
+POZOR: Musíš úspěšně zavolat OBA nástroje (\`updateFirstName\` i \`updateNickname\`), aby byla databáze správně zaplněna, než budeš pokračovat v normální konverzaci.
+`;
 
 	if (user_data) {
 		const name = user_data.nickname_vocative || user_data.first_name_vocative;
@@ -121,6 +145,7 @@ ${conversation_data.length > 1 ?
 			: ""
 		}
 
+${isFirstCall ? firstCallInstructionsEn : ""}
 	`
 
 	let prompt_cs = `
@@ -169,11 +194,12 @@ ${conversation_data.length > 0 ?
 ${conversation_data.length > 1 ?
 			conversation_data.slice(1).map((conversation) => {
 				return `Předchozí konverzace z ${new Date(conversation.started_at * 1000).toLocaleString('cs-CZ')}:
-	${JSON.stringify(conversation.summary)}`
+		${JSON.stringify(conversation.summary)}`
 			}).join("\n\n")
 			: ""
 		}
 
+${isFirstCall ? firstCallInstructionsCs : ""}
 	`
 
 	console.log("PROMPT LANGUAGE", caller_id.startsWith("+420") ? "CS" : "EN")
