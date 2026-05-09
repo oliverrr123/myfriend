@@ -233,7 +233,7 @@ ${isFirstCall ? firstCallInstructionsCs : ""}
 
 
 // ElevenLabs conversation initiation webhook
-app.post("/api/endCall", express.text({ type: 'application/json' }), async (req, res) => {
+app.post("/api/endCall", express.text({ type: 'application/json', limit: '25mb' }), async (req, res) => {
 	const signature = req.headers['elevenlabs-signature'];
 	const payload = req.body;
 

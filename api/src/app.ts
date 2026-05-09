@@ -2,6 +2,7 @@ import express from "express";
 import cors from "cors";
 
 export const app = express();
+const BODY_LIMIT = "25mb";
 
 // Middleware
 app.use(cors());
@@ -12,6 +13,6 @@ app.use((req, res, next) => {
     if (req.originalUrl === '/api/endCall') {
         next();
     } else {
-        express.json()(req, res, next);
+        express.json({ limit: BODY_LIMIT })(req, res, next);
     }
 });
