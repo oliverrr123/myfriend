@@ -1,6 +1,7 @@
 {
   "name": "myfriend-api",
   "version": "1.0.0",
+  "packageManager": "pnpm@10.18.3",
   "description": "Express API server",
   "main": "dist/index.js",
   "scripts": {

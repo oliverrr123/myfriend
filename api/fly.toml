@@ -14,9 +14,12 @@ primary_region = 'fra'
 [http_service]
   internal_port = 8080
   force_https = true
+  # Keep one machine warm: voice calls only hit this API for initCall, then again on
+  # server tools (e.g. createReminder). Idle gap can exceed Fly's stop window so autostop
+  # was tearing down the VM exactly when tools ran → timeouts / failed tool calls.
   auto_stop_machines = 'stop'
   auto_start_machines = true
-  min_machines_running = 0
+  min_machines_running = 1
   processes = ['app']
 
 [[vm]]

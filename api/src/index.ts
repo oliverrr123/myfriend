@@ -1,4 +1,5 @@
 import { app } from "./app";
+import { inferLanguageCodeFromE164 } from "./lib/phoneLanguagePrefix";
 import { supabase } from "./lib/supabase";
 import { authenticateApiKey } from "./middleware/auth";
 import "./reminder";
@@ -10,6 +11,221 @@ const elevenlabs = new ElevenLabsClient();
 const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET;
 
 const PORT = Number(process.env.PORT) || 3001;
+
+/** ISO 639-1 codes accepted for users.language, persistUserLanguageToDatabase, and language_detection (must match agent languages in ElevenLabs). */
+const SUPPORTED_CONVERSATION_LANGUAGES = [
+	"cs",
+	"da",
+	"de",
+	"el",
+	"en",
+	"es",
+	"fi",
+	"fr",
+	"he",
+	"hi",
+	"hr",
+	"is",
+	"it",
+	"ja",
+	"kk",
+	"ko",
+	"pa",
+	"pl",
+	"pt",
+	"ro",
+	"ru",
+	"sk",
+	"sl",
+	"sv",
+	"tr",
+	"uk",
+	"ur",
+	"vi",
+	"zh",
+] as const;
+
+type ConversationLanguage = (typeof SUPPORTED_CONVERSATION_LANGUAGES)[number];
+
+const SUPPORTED_LANGUAGE_SET: ReadonlySet<string> = new Set(
+	SUPPORTED_CONVERSATION_LANGUAGES,
+);
+
+/** Lowercase aliases (e.g. full English name) → canonical code */
+const LANGUAGE_ALIASES: Record<string, ConversationLanguage> = {
+	cz: "cs",
+	czech: "cs",
+	english: "en",
+	chinese: "zh",
+	mandarin: "zh",
+	croatian: "hr",
+	danish: "da",
+	finnish: "fi",
+	french: "fr",
+	german: "de",
+	greek: "el",
+	hebrew: "he",
+	hindi: "hi",
+	icelandic: "is",
+	italian: "it",
+	japanese: "ja",
+	kazakh: "kk",
+	korean: "ko",
+	polish: "pl",
+	portuguese: "pt",
+	punjabi: "pa",
+	romanian: "ro",
+	russian: "ru",
+	slovak: "sk",
+	slovenian: "sl",
+	swedish: "sv",
+	spanish: "es",
+	turkish: "tr",
+	ukrainian: "uk",
+	urdu: "ur",
+	vietnamese: "vi",
+};
+
+function isConversationLanguage(s: string): s is ConversationLanguage {
+	return SUPPORTED_LANGUAGE_SET.has(s);
+}
+
+const SUPPORTED_LANGUAGES_PROMPT_LIST =
+	SUPPORTED_CONVERSATION_LANGUAGES.join(", ");
+
+function languageFromPhonePrefix(callerId: string): ConversationLanguage {
+	const code = inferLanguageCodeFromE164(callerId);
+	return isConversationLanguage(code) ? code : "en";
+}
+
+function normalizeConversationLanguage(
+	raw: string | null | undefined,
+	caller_id: string,
+): ConversationLanguage {
+	const lower = (raw ?? "").trim().toLowerCase();
+	if (!lower) {
+		return languageFromPhonePrefix(caller_id);
+	}
+	const alias = LANGUAGE_ALIASES[lower];
+	if (alias) return alias;
+	if (isConversationLanguage(lower)) return lower;
+	return languageFromPhonePrefix(caller_id);
+}
+
+type WelcomeBackTemplate = (name?: string) => string;
+
+/** Returning user: first spoken line, optional vocative name */
+const WELCOME_BACK_BY_LANGUAGE: Record<
+	ConversationLanguage,
+	WelcomeBackTemplate
+> = {
+	cs: (name) =>
+		name ? `Vítej zpátky, ${name}!` : "Vítej zpátky!",
+	da: (name) =>
+		name ? `Velkommen tilbage, ${name}!` : "Velkommen tilbage!",
+	de: (name) =>
+		name ? `Willkommen zurück, ${name}!` : "Willkommen zurück!",
+	el: (name) =>
+		name ? `Καλώς ήρθες πάλι, ${name}!` : "Καλώς ήρθες πάλι!",
+	en: (name) =>
+		name ? `Welcome back, ${name}!` : "Welcome back!",
+	es: (name) =>
+		name ? `¡Bienvenido de nuevo, ${name}!` : "¡Bienvenido de nuevo!",
+	fi: (name) =>
+		name ? `Tervetuloa takaisin, ${name}!` : "Tervetuloa takaisin!",
+	fr: (name) =>
+		name ? `Bon retour, ${name} !` : "Bon retour !",
+	he: (name) =>
+		name ? `ברוך השב, ${name}!` : "ברוך השב!",
+	hi: (name) =>
+		name
+			? `फिर से स्वागत है, ${name}!`
+			: "फिर से स्वागत है!",
+	hr: (name) =>
+		name ? `Dobrodošao natrag, ${name}!` : "Dobrodošao natrag!",
+	is: (name) =>
+		name ? `Velkomin aftur, ${name}!` : "Velkomin aftur!",
+	it: (name) =>
+		name ? `Bentornato, ${name}!` : "Bentornato!",
+	ja: (name) =>
+		name ? `おかえり、${name}さん！` : "おかえり！",
+	kk: (name) =>
+		name ? `Қайта қош келдің, ${name}!` : "Қайта қош келдің!",
+	ko: (name) =>
+		name
+			? `다시 만나서 반가워, ${name}!`
+			: "다시 만나서 반가워!",
+	pa: (name) =>
+		name
+			? `ਵਾਪਸ ਸੁਆਗਤ ਹੈ, ${name}!`
+			: "ਵਾਪਸ ਸੁਆਗਤ ਹੈ!",
+	pl: (name) =>
+		name ? `Witaj z powrotem, ${name}!` : "Witaj z powrotem!",
+	pt: (name) =>
+		name ? `Bem-vindo de volta, ${name}!` : "Bem-vindo de volta!",
+	ro: (name) =>
+		name ? `Bine ai revenit, ${name}!` : "Bine ai revenit!",
+	ru: (name) =>
+		name ? `С возвращением, ${name}!` : "С возвращением!",
+	sk: (name) =>
+		name ? `Vitaj späť, ${name}!` : "Vitaj späť!",
+	sl: (name) =>
+		name ? `Dobrodošel nazaj, ${name}!` : "Dobrodošel nazaj!",
+	sv: (name) =>
+		name ? `Välkommen tillbaka, ${name}!` : "Välkommen tillbaka!",
+	tr: (name) =>
+		name ? `Tekrar hoş geldin, ${name}!` : "Tekrar hoş geldin!",
+	uk: (name) =>
+		name ? `З поверненням, ${name}!` : "З поверненням!",
+	ur: (name) =>
+		name
+			? `واپسی پر خوش آمدید، ${name}!`
+			: "واپسی پر خوش آمدید!",
+	vi: (name) =>
+		name ? `Chào mừng trở lại, ${name}!` : "Chào mừng trở lại!",
+	zh: (name) =>
+		name ? `欢迎回来，${name}！` : "欢迎回来！",
+};
+
+/** First-ever call: ask for name (MyFriend brand; Czech keeps DigiPřítel) */
+const FIRST_CALL_INTRO_BY_LANGUAGE: Record<ConversationLanguage, string> = {
+	cs: "Ahoj, tady DigiPřítel, jak se jmenuješ ty?",
+	da: "Hej, jeg er MyFriend, hvad hedder du?",
+	de: "Hey, ich bin MyFriend, wie heißt du?",
+	el: "Γεια σου, είμαι ο MyFriend, πώς σε λένε;",
+	en: "Hey, I'm MyFriend, what's your name?",
+	es: "¡Hola, soy MyFriend! ¿Cómo te llamas?",
+	fi: "Hei, olen MyFriend, mikä sun nimi on?",
+	fr: "Salut, je suis MyFriend, comment tu t'appelles ?",
+	he: "היי, אני MyFriend, איך קוראים לך?",
+	hi: "नमस्ते, मैं MyFriend हूँ, आपका नाम क्या है?",
+	hr: "Bok, ja sam MyFriend, kako se zoveš?",
+	is: "Hæ, ég er MyFriend, hvað heitir þú?",
+	it: "Ciao, sono MyFriend, come ti chiami?",
+	ja: "やあ、僕はMyFriendだけど、名前は？",
+	kk: "Сәлем, мен MyFriend, атың кім?",
+	ko: "안녕, 나는 MyFriend야, 이름이 뭐야?",
+	pa: "ਹੈਲੋ, ਮੈਂ MyFriend ਹਾਂ, ਤੁਹਾਡਾ ਨਾਮ ਕੀ ਹੈ?",
+	pl: "Cześć, jestem MyFriend, jak masz na imię?",
+	pt: "Oi, eu sou o MyFriend, qual é o seu nome?",
+	ro: "Hei, sunt MyFriend, cum te numești?",
+	ru: "Привет, я MyFriend, как тебя зовут?",
+	sk: "Ahoj, som MyFriend, ako sa voláš?",
+	sl: "Živjo, jaz sem MyFriend, kako ti je ime?",
+	sv: "Hej, jag är MyFriend, vad heter du?",
+	tr: "Selam, ben MyFriend, adın ne?",
+	uk: "Привіт, я MyFriend, як тебе звати?",
+	ur: "ہیلو، میں MyFriend ہوں، آپ کا نام کیا ہے؟",
+	vi: "Chào, mình là MyFriend, bạn tên gì vậy?",
+	zh: "嗨，我是MyFriend，你叫什么名字？",
+};
+
+function welcomeBackForLanguage(
+	lang: ConversationLanguage,
+	name?: string | null,
+): string {
+	return WELCOME_BACK_BY_LANGUAGE[lang](name?.trim() || undefined);
+}
 
 // Health check (public)
 app.get("/health", (req, res) => {
@@ -49,8 +265,8 @@ app.post("/api/initCall", authenticateApiKey, async (req, res) => {
 
 	if (conversation_error) return res.status(500).json({ error: conversation_error.message });
 
-	let message;
-	let language;
+	let message: string;
+	let language: ConversationLanguage;
 	const isFirstCall = conversation_data.length === 0;
 
 	const firstCallInstructionsEn = `
@@ -79,18 +295,15 @@ POZOR: Musíš úspěšně zavolat OBA nástroje (\`updateFirstName\` i \`update
 
 	if (user_data) {
 		const name = user_data.nickname_vocative || user_data.first_name_vocative;
-		message = `Welcome back${name ? `, ${name}` : ""}!`;
-		if (caller_id.startsWith("+420")) {
-			message = `Vítej zpátky${name ? `, ${name}` : ""}!`;
+		if (isFirstCall) {
+			language = languageFromPhonePrefix(caller_id);
+		} else {
+			language = normalizeConversationLanguage(user_data.language, caller_id);
 		}
-		language = user_data.language;
+		message = welcomeBackForLanguage(language, name);
 	} else {
-		message = "Hey, I'm MyFriend, what's your name?"
-		language = "en";
-		if (caller_id.startsWith("+420")) {
-			language = "cs"
-			message = "Ahoj, tady DigiPřítel, jak se jmenuješ ty?";
-		}
+		language = languageFromPhonePrefix(caller_id);
+		message = FIRST_CALL_INTRO_BY_LANGUAGE[language];
 		await supabase.from("users").insert({ phone_number: caller_id, language: language });
 	}
 
@@ -126,6 +339,18 @@ Before sending it definitely, just humanly summarize it for a check.
 ──────────────── IDENTITY:
 You are MyFriend. You know you're an AI, but you act as humanly as possible.
 Your goal is to make the user feel good, have fun, and feel like they have a cool buddy on the line.
+──────────────── LANGUAGE (READ CAREFULLY — TOOL vs JUST SPEAKING):
+You can answer in any language by writing in that language. That alone does **not** save the user's preference to the database.
+
+The transcript/UI may look like you "switched language" when you only started writing in another language—that is **not** the same as persisting their choice. The **only** way to save the users language field on the server is to call the HTTP server tool **persistUserLanguageToDatabase** with JSON body: caller_id from dynamic variables, and **language** set to one of these ISO 639-1 codes (lowercase): ${SUPPORTED_LANGUAGES_PROMPT_LIST}. Do not claim the database was updated unless that tool returned success.
+
+**ElevenLabs voice language (this same phone call):** Updating the database does **not** change the agents configured output language. To switch spoken output during the call, you **must** also invoke the ElevenLabs **system** tool **language_detection** with **reason** (short) and **language** set to the **same** code you persist—one of the list above, and the agent must have that language enabled. When the user wants a real language switch: call **language_detection** first, then **persistUserLanguageToDatabase** with the same code.
+
+Flow when they want a full switch: after they clearly confirm, call **language_detection** with the target language code, then **persistUserLanguageToDatabase** with the same code; wait for both to succeed, then say it is saved and continue in that language. If they only want a quick demo in another language, you may speak it **without** either tool.
+
+Important: If they ask to speak another language and **confirm** they want to **continue the call** in it (including by repeating the request or continuing in that language), treat that as consent: call **language_detection** then **persistUserLanguageToDatabase** with the matching code **before** you reply at length in that language. One successful pair of calls per switch is enough (both tools).
+
+Forbidden: Saying you saved their language, "switched our conversation" in the **saved** sense, or that it will apply on the next call until persistUserLanguageToDatabase succeeded.
 
 Current time is: ${pragueTime}
 
@@ -182,6 +407,37 @@ Než to definitivně odešleš, jen si to lidsky shrňte pro kontrolu.
 ──────────────── IDENTITA:
 Jsi DigiPřítel.Víš, že jsi AI, ale chováš se maximálně lidsky.
 Tvým cílem je, aby se uživatel cítil dobře, zabavil se a měl pocit, že má na drátě fajn parťáka.
+──────────────── JAZYK (NUTNÉ — TOOL VS JEN MLUVIT JINAK):
+Můžeš odpovídat v libovolném jazyce jen tím, že v něm píšeš. Tím samo o sobě se preference do databáze neuloží.
+
+Transkript může vypadat, že jsi přepnul jazyk, když jsi jen začal psát jinak—to není uložení volby uživatele. Jediný způsob, jak uložit pole language na serveru, je zavolat nástroj **persistUserLanguageToDatabase** s JSON tělem: caller_id z dynamic variables, a **language** jako jeden z těchto kódů ISO 639-1 (malá písmena): ${SUPPORTED_LANGUAGES_PROMPT_LIST}. Bez úspěchu tohoto toolu nikdy neříkej, že je to v databázi.
+
+**Hlas a jazyk výstupu v ElevenLabs (tentýž hovor):** Uložení do databáze nemění výstupní jazyk agenta. Aby se přepnul mluvený jazyk během hovoru, musíš zavolat **systémový** nástroj **language_detection** s **reason** a **language** se **stejným** kódem jako u persist (z výše uvedeného seznamu; jazyk musí mít agent zapnutý). Pořadí: nejdřív **language_detection**, pak **persistUserLanguageToDatabase** se stejným kódem.
+
+Když uživatel chce trvale přepnout: po jasném souhlasu zavolej oba nástroje, počkej na úspěch, teprve potom řekni, že je uloženo. Krátká ukázka jiného jazyka může být bez nástrojů.
+
+Zeptá-li se v jednom jazyce, zda umíš jiný, odpověz v jazyce otázky, zeptej se, jestli chce **celý další průběh** v tom cílovém jazyce. Pokud ano, použij oba nástroje s příslušným kódem z tabulky (stejný kód do obou).
+
+Zakázáno: Tvrdit, že je jazyk uložený nebo že to platí napříště, dokud **persistUserLanguageToDatabase** nevrátil úspěch.
+──────────────── PŘIPOMÍNKY:
+Uživatel ti může říct ať mu něco připomeneš. V tom případě potřebuješ vědět tyto informace:
+- Co připomenout
+- V kolik hodin
+- V kolik minut
+- V jaké datum
+- Jak často (once, daily, weekly, monthly, yearly)
+- Případně v jaké dny v týdnu
+- Případně kdy připomínání končí
+──────────────── DALŠÍ INSTRUKCE:
+Pokud uživatel od tebe chce generovat kód, nedělej to. Vysvětli mu, co bude chctít, ale negeneruj kód. Je zbytečné to říkat po telefonu.
+Vytvořil tě Oliver Cingl ve spolupráci se seniorem Zdeňkem Svobodou. Zdeněk Svoboda pořádá různé workshopy a přednášky pro seniory, především o mentálním zdraví.
+Webová stránka DigiPřítele je digipritel.cz. Tam je kontakt na autora projektu, Olivera Cingla.
+Když uživatel chce
+
+Až toto budeš vědět, zavolej tool \`createReminder\`, počkej, než ti vrátí success a až teprve pak oznam uživateli, že připomínka byla nastavena.
+V žádném případě neoznamuj uživateli, že připomínka byla nastavena, než ti tool vrátí success. Nikdy.
+
+Neříkej "kámo". Mluvíš se seniory. Toto slovo nepoužívají.
 
 Aktuální čas je: ${pragueTime}
 
@@ -193,7 +449,7 @@ Další informace:
 ${JSON.stringify(fact_data)}
 
 ${conversation_data.length > 0 ?
-			`Poslední konverzace z ${new Date(conversation_data[0].started_at * 1000).toLocaleString('cs-CZ')}: ${JSON.stringify(conversation_data[0].transcript)}`
+			`Předchozí konverzace z ${new Date(conversation_data[0].started_at * 1000).toLocaleString('cs-CZ')}: ${JSON.stringify(conversation_data[0].transcript)}`
 			: ""
 		}
 
@@ -208,10 +464,17 @@ ${conversation_data.length > 1 ?
 ${isFirstCall ? firstCallInstructionsCs : ""}
 	`
 
-	console.log("PROMPT LANGUAGE", caller_id.startsWith("+420") ? "CS" : "EN")
-	console.log(caller_id)
-	console.log(language)
-	console.log(caller_id.startsWith("+420"))
+	let systemPrompt = language === "cs" ? prompt_cs : prompt_en;
+	if (language !== "cs" && language !== "en") {
+		systemPrompt += `
+──────────────── SESSION LANGUAGE:
+The active session language code is ${language}. For this entire conversation, speak and write only in this language (aligned with the ElevenLabs agent language). Apply every personality and behavior rule from the instructions above in this language.`;
+	}
+
+	console.log("PROMPT LANGUAGE", language);
+	console.log(caller_id);
+	console.log(language);
+	console.log(!isFirstCall ? "returning_call" : "first_call");
 
 	res.json({
 		type: "conversation_initiation_client_data",
@@ -223,8 +486,8 @@ ${isFirstCall ? firstCallInstructionsCs : ""}
 				first_message: message,
 				language: language,
 				prompt: {
-					prompt: caller_id.startsWith("+420") ? prompt_cs : prompt_en
-				}
+					prompt: systemPrompt,
+				},
 			},
 		},
 	});
@@ -367,6 +630,40 @@ app.post("/api/updateNickname", authenticateApiKey, async (req, res) => {
 	if (error) return res.status(500).json({ error: error.message });
 
 	res.json({ message: "Nickname updated successfully" });
+});
+
+app.post("/api/persistUserLanguageToDatabase", authenticateApiKey, async (req, res) => {
+	const { caller_id, language: rawLanguage } = req.body;
+
+	if (!caller_id) {
+		return res.status(400).json({ error: "Missing caller_id" });
+	}
+	if (rawLanguage === undefined || rawLanguage === null || rawLanguage === "") {
+		return res.status(400).json({ error: "Missing language" });
+	}
+
+	const languageRaw = String(rawLanguage).trim().toLowerCase();
+	const languageCanonical =
+		LANGUAGE_ALIASES[languageRaw] ??
+		(isConversationLanguage(languageRaw) ? languageRaw : null);
+
+	if (!languageCanonical) {
+		return res.status(400).json({
+			error: `Invalid language. Use one of: ${SUPPORTED_LANGUAGES_PROMPT_LIST}`,
+		});
+	}
+
+	const { error } = await supabase
+		.from("users")
+		.update({ language: languageCanonical })
+		.eq("phone_number", caller_id);
+
+	if (error) return res.status(500).json({ error: error.message });
+
+	res.json({
+		message: "Language updated successfully",
+		language: languageCanonical,
+	});
 });
 
 
