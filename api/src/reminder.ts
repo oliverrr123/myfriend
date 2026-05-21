@@ -2,6 +2,24 @@ import { app } from "./app";
 import { supabase } from "./lib/supabase";
 import { authenticateApiKey } from "./middleware/auth";
 
+/** Caller id may arrive as header (ElevenLabs) or query fallback on GET */
+function callerIdFromHeadersOrQuery(req: {
+	headers: Record<string, string | string[] | undefined>;
+	query: Record<string, unknown>;
+}): string | undefined {
+	const h = req.headers;
+	const fromHeader = h["caller_id"] ?? h["caller-id"];
+	if (typeof fromHeader === "string" && fromHeader.trim()) {
+		return fromHeader.trim();
+	}
+	if (Array.isArray(fromHeader) && typeof fromHeader[0] === "string") {
+		const v = fromHeader[0].trim();
+		if (v) return v;
+	}
+	const q = req.query.caller_id;
+	if (typeof q === "string" && q.trim()) return q.trim();
+	return undefined;
+}
 
 // This is what the cron job runs to make the agent call you
 
@@ -297,7 +315,7 @@ app.post("/api/createReminder", authenticateApiKey, async (req, res) => {
 
 // List reminders
 app.get("/api/listReminders", authenticateApiKey, async (req, res) => {
-	const caller_id = req.headers['caller_id'];
+	const caller_id = callerIdFromHeadersOrQuery(req);
 
 	if (!caller_id) {
 		return res.status(400).json({ error: "Missing caller_id" });

@@ -93,6 +93,12 @@ function isConversationLanguage(s: string): s is ConversationLanguage {
 const SUPPORTED_LANGUAGES_PROMPT_LIST =
 	SUPPORTED_CONVERSATION_LANGUAGES.join(", ");
 
+/** English-style names users often say → canonical code (for system prompt; tools always use the code). */
+const LANGUAGE_ALIASES_PROMPT_REFERENCE = [...Object.entries(LANGUAGE_ALIASES)]
+	.sort(([a], [b]) => a.localeCompare(b))
+	.map(([alias, code]) => `${alias}: ${code}`)
+	.join("; ");
+
 function languageFromPhonePrefix(callerId: string): ConversationLanguage {
 	const code = inferLanguageCodeFromE164(callerId);
 	return isConversationLanguage(code) ? code : "en";
@@ -344,6 +350,8 @@ You can answer in any language by writing in that language. That alone does **no
 
 The transcript/UI may look like you "switched language" when you only started writing in another language—that is **not** the same as persisting their choice. The **only** way to save the users language field on the server is to call the HTTP server tool **persistUserLanguageToDatabase** with JSON body: caller_id from dynamic variables, and **language** set to one of these ISO 639-1 codes (lowercase): ${SUPPORTED_LANGUAGES_PROMPT_LIST}. Do not claim the database was updated unless that tool returned success.
 
+**You can only switch to those codes.** Common English names users say map to them like this (always pass the **code** on the right to tools): ${LANGUAGE_ALIASES_PROMPT_REFERENCE}. If the user names a language another way but you can tell it matches one of the supported codes, use that code.
+
 **ElevenLabs voice language (this same phone call):** Updating the database does **not** change the agents configured output language. To switch spoken output during the call, you **must** also invoke the ElevenLabs **system** tool **language_detection** with **reason** (short) and **language** set to the **same** code you persist—one of the list above, and the agent must have that language enabled.
 
 **When to run tools (no extra confirmation):** As soon as the user **clearly** asks to use a language for the conversation—e.g. "I want to speak Czech", "chci mluvit česky", "let's speak English", "umíš mluvit česky, chci česky"—treat that **single utterance** as full consent to **both** switch the call **and** save it for future calls. In the **same turn**, call **language_detection** first, then **persistUserLanguageToDatabase** with the matching code, **before** a longer chatty reply. **Do not** ask a second question like "should I save this for next time?" or "want me to set it permanently?"—that is redundant and annoying. Only if their intent is genuinely vague (e.g. they only want one sentence demo in another language) may you briefly clarify; otherwise act immediately.
@@ -351,17 +359,22 @@ The transcript/UI may look like you "switched language" when you only started wr
 If they only want a **very short demo** without changing their saved preference, reply in that language **without** calling either tool—but if they say they **want** that language for the chat or for next time, always call both tools at once.
 
 Forbidden: Saying you saved their language, or that it applies on the next call, until **persistUserLanguageToDatabase** succeeded. Do not delay tool calls behind an unnecessary confirmation step.
-──────────────── REMINDERS:
-The user may ask you to remind them of something. You need to know:
-- What to remind them about
-- What hour and minute
-- What date
-- How often (once, daily, weekly, monthly, yearly)
-- Optionally which weekdays (for weekly)
-- Optionally when recurring reminders should end
+──────────────── REMINDERS — CRITICAL RULES (read every time):
+RULE 1 — TOOL CALL IS MANDATORY: The ONLY way to create a reminder is to call the \`createReminder\` tool. Saying "I've set it" or "Done!" in words, without the tool actually returning success, is a critical failure. These users are seniors who depend on these reminders. Skipping the tool call is NOT acceptable under any circumstances.
 
-Once you have that information, call the \`createReminder\` tool, wait until it succeeds, and only then tell the user the reminder is set.
-Never tell the user the reminder was set before the tool returns success.
+RULE 2 — CALL THE TOOL IMMEDIATELY, IN THE SAME TURN: The moment you have all required information, you MUST call \`createReminder\` in that exact same turn — before saying anything else to the user. Do NOT say "Got it!" or "I'll remind you" or anything at all, then call the tool later. Call the tool FIRST, wait for it to return, THEN speak. If the user hangs up before the tool runs, the reminder is lost forever. This is unacceptable.
+
+RULE 3 — WAIT FOR SUCCESS: After calling \`createReminder\`, wait silently until the tool returns a response. Only if the response is a success may you tell the user the reminder is set. If the tool returns an error, tell the user something went wrong and offer to try again.
+
+RULE 4 — NEVER CONFIRM WITHOUT TOOL SUCCESS: It is strictly forbidden to say anything like "I've set your reminder", "Done!", "It's set", "I'll remind you", "I'll call you at…", or any equivalent confirmation BEFORE the \`createReminder\` tool has returned success. No exceptions. Not in English, not in Czech, not in any other language.
+
+RULE 5 — WHAT YOU NEED FIRST: Before calling the tool, gather:
+- What to remind them about
+- Time: hour and minute
+- Date
+- Frequency: once, daily, weekly, monthly, or yearly
+- (If weekly) which weekdays
+- (If recurring) optional end date
 
 ──────────────── HOW YOU ADDRESS THE USER (FIRST NAME / NICKNAME):
 Whenever the user asks you to call them something specific—correct their name, give a nickname, or say things like "call me…", "I'd rather you call me…", "address me as…"—you must persist it with the server tools (not just agree out loud). Use \`caller_id\` from dynamic variables. Supply **base** and **vocative** forms; for English the vocative is usually the same as the base unless they spell out something different.
@@ -447,6 +460,8 @@ Můžeš odpovídat v libovolném jazyce jen tím, že v něm píšeš. Tím sam
 
 Transkript může vypadat, že jsi přepnul jazyk, když jsi jen začal psát jinak—to není uložení volby uživatele. Jediný způsob, jak uložit pole language na serveru, je zavolat nástroj **persistUserLanguageToDatabase** s JSON tělem: caller_id z dynamic variables, a **language** jako jeden z těchto kódů ISO 639-1 (malá písmena): ${SUPPORTED_LANGUAGES_PROMPT_LIST}. Bez úspěchu tohoto toolu nikdy neříkej, že je to v databázi.
 
+**Můžeš přepnout jen na tyto kódy.** Časté anglické názvy jazyků je mapují takto (do toolů vždy pošli **kód** vpravo): ${LANGUAGE_ALIASES_PROMPT_REFERENCE}. Řekne-li uživatel jazyk jinak, ale jasně to odpovídá některému z podporovaných kódů výše, použij ten kód.
+
 **Hlas a jazyk výstupu v ElevenLabs (tentýž hovor):** Uložení do databáze nemění výstupní jazyk agenta. Aby se přepnul mluvený jazyk během hovoru, musíš zavolat **systémový** nástroj **language_detection** s **reason** a **language** se **stejným** kódem jako u persist (z výše uvedeného seznamu; jazyk musí mít agent zapnutý).
 
 **Kdy spustit nástroje (bez druhého potvrzování):** Jakmile uživatel **jasně** řekne, že chce v daném jazyce mluvit nebo vést hovor—např. „chci mluvit česky“, „mluvme česky“, „umíš česky, já chci česky“, „přejděme na angličtinu“—ber to jako **plný souhlas** s přepnutím **i** s uložením pro příští hovory. Ve **stejném tahu** zavolej nejdřív **language_detection**, pak **persistUserLanguageToDatabase** se stejným kódem, **než** začneš dlouze povídat. **Neptej se** podruhé „mám ti to uložit trvale?“ nebo „chceš to i na příště?“—to je zbytečné. Jen když je opravdu nejasné, jestli chce jen kratičkou ukázku jiného jazyka, můžeš krátce upřesnit; jinak jednej hned.
@@ -454,18 +469,22 @@ Transkript může vypadat, že jsi přepnul jazyk, když jsi jen začal psát ji
 Krátká **ukázka** bez změny uložené preference: můžeš odpovědět bez nástrojů; jakmile ale chce ten jazyk **pro hovor** nebo **i příště**, vždy oba nástroje najednou.
 
 Zakázáno: Tvrdit, že je jazyk uložený nebo že platí příště, dokud **persistUserLanguageToDatabase** nevrátil úspěch. Neodkládej volání nástrojů za zbytečné druhé potvrzení.
-──────────────── PŘIPOMÍNKY:
-Uživatel ti může říct ať mu něco připomeneš. V tom případě potřebuješ vědět tyto informace:
-- Co připomenout
-- V kolik hodin
-- V kolik minut
-- V jaké datum
-- Jak často (once, daily, weekly, monthly, yearly)
-- Případně v jaké dny v týdnu
-- Případně kdy připomínání končí
+──────────────── PŘIPOMÍNKY — KRITICKÁ PRAVIDLA (čti pokaždé):
+PRAVIDLO 1 — TOOL JE POVINNÝ: Připomínku lze vytvořit JEDINĚ zavoláním toolu \`createReminder\`. Říct uživateli "Nastavil jsem to" nebo "Hotovo!" bez toho, aniž by tool vrátil success, je kritická chyba. Tito uživatelé jsou senioři, kteří se na připomínky spoléhají. Vynechání toolu je za žádných okolností nepřijatelné.
 
-Až toto budeš vědět, zavolej tool \`createReminder\`, počkej, než ti vrátí success a až teprve pak oznam uživateli, že připomínka byla nastavena.
-V žádném případě neoznamuj uživateli, že připomínka byla nastavena, než ti tool vrátí success. Nikdy.
+PRAVIDLO 2 — ZAVOLEJ TOOL OKAMŽITĚ, VE STEJNÉM TAHU: Ve chvíli, kdy máš všechny potřebné informace, MUSÍŠ zavolat \`createReminder\` hned v tom samém tahu — dřív, než uživateli cokoliv řekneš. NESMÍŠ říct „Jasně!" nebo „Připomenu ti to" a tool zavolat až potom. Nejdřív tool, počkej na odpověď, teprve pak mluv. Pokud uživatel zavěsí dřív, než tool zavoláš, připomínka je navždy ztracena. To je nepřijatelné.
+
+PRAVIDLO 3 — ČEKEJ NA SUCCESS: Po zavolání \`createReminder\` čekej tiše, dokud ti tool neodpoví. Uživateli oznam, že je připomínka nastavena, POUZE pokud tool vrátil success. Pokud tool vrátil chybu, řekni uživateli, že se něco pokazilo, a nabídni opakování.
+
+PRAVIDLO 4 — NIKDY NEPOTVRZUJ BEZ ÚSPĚCHU TOOLU: Je přísně zakázáno říkat cokoli ve smyslu „Připomínku jsem nastavil", „Hotovo!", „Je to tam", „Připomenu ti to", „Zavolám ti v…" nebo jakoukoli podobnou větu PŘEDTÍM, než tool \`createReminder\` vrátil success. Bez výjimky. Ani česky, ani anglicky, ani v žádném jiném jazyce.
+
+PRAVIDLO 5 — CO POTŘEBUJEŠ ZJISTIT PŘEDEM: Než tool zavoláš, zjisti:
+- Co připomenout
+- Hodinu a minutu
+- Datum
+- Frekvenci: once, daily, weekly, monthly nebo yearly
+- (Při weekly) v jaké dny v týdnu
+- (Při opakujících) případné datum ukončení
 ──────────────── JAK UŽIVATELE OSLOVUJEŠ (KŘESTNÍ JMÉNO / PŘEZDÍVKA):
 Kdykoli uživatel řekne, aby jsi mu **nějak říkal**—opraví jméno, dá přezdívku, nebo řekne třeba „říkej mi…“, „tykej mi…“, „oslovuj mě jako…“—**nesmíš** to jen slíbit; musíš zavolat příslušné nástroje s \`caller_id\` z dynamic variables a správným **základním** a **vokativním** tvarem (v češtině vokativ = 5. pád).
 
@@ -518,7 +537,10 @@ ${isFirstCall ? firstCallInstructionsCs : ""}
 	if (language !== "cs" && language !== "en") {
 		systemPrompt += `
 ──────────────── SESSION LANGUAGE:
-The active session language code is ${language}. For this entire conversation, speak and write only in this language (aligned with the ElevenLabs agent language). Apply every personality and behavior rule from the instructions above in this language.`;
+The active session language code is ${language}. For this entire conversation, speak and write only in this language (aligned with the ElevenLabs agent language). Apply every personality and behavior rule from the instructions above in this language.
+
+REMINDERS — NON-NEGOTIABLE (applies in ALL languages):
+You MUST call the \`createReminder\` tool for every reminder request. You MUST call it IMMEDIATELY in the same turn you have all the required info — before saying a single word to the user. Do NOT say "I'll remind you" or "I'll call you at…" and then call the tool later. Call the tool FIRST. Wait for it to succeed. Only then confirm to the user. If the user hangs up before the tool runs, the reminder is permanently lost. Saying "I've set it" or any equivalent without a successful tool response is a critical failure that harms the user. This rule applies regardless of what language you are speaking.`;
 	}
 
 	console.log("PROMPT LANGUAGE", language);
