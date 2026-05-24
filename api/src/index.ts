@@ -12,6 +12,10 @@ const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET;
 
 const PORT = Number(process.env.PORT) || 3001;
 
+const VOICE_MALE = "KgTzZavF7McT7q0opsJu";
+const VOICE_FEMALE = "RILOU7YmBhvwJGDGjNmP";
+const VOICE_DEFAULT = VOICE_MALE;
+
 /** ISO 639-1 codes accepted for users.language, persistUserLanguageToDatabase, and language_detection (must match agent languages in ElevenLabs). */
 const SUPPORTED_CONVERSATION_LANGUAGES = [
 	"cs",
@@ -248,7 +252,7 @@ app.post("/api/initCall", authenticateApiKey, async (req, res) => {
 
 	const { data: user_data, error: user_error } = await supabase
 		.from("users")
-		.select("nickname_vocative, first_name_vocative, language")
+		.select("nickname_vocative, first_name_vocative, language, agent_voice_id, agent_gender")
 		.eq("phone_number", caller_id)
 		.maybeSingle();
 
@@ -275,6 +279,11 @@ app.post("/api/initCall", authenticateApiKey, async (req, res) => {
 	let language: ConversationLanguage;
 	const isFirstCall = conversation_data.length === 0;
 
+	console.log("conversation_data length:", conversation_data.length);
+	console.log("conversation_data:", conversation_data.map(c => c.summary));
+	console.log("isFirstCall:", isFirstCall);
+
+
 	const firstCallInstructionsEn = `
 ──────────────── FIRST CONVERSATION (INSTRUCTIONS):
 IMPORTANT: This is your very first call with this user. Your primary and mandatory task is:
@@ -300,23 +309,34 @@ POZOR: Musíš úspěšně zavolat OBA nástroje (\`updateFirstName\` i \`update
 `;
 
 	if (user_data) {
+		console.log("user_data found in database");
 		const name = user_data.nickname_vocative || user_data.first_name_vocative;
 		if (isFirstCall) {
 			language = languageFromPhonePrefix(caller_id);
+			message = FIRST_CALL_INTRO_BY_LANGUAGE[language];
 		} else {
 			language = normalizeConversationLanguage(user_data.language, caller_id);
+			message = welcomeBackForLanguage(language, name);
 		}
-		message = welcomeBackForLanguage(language, name);
 	} else {
+		console.log("user_data not found in database");
 		language = languageFromPhonePrefix(caller_id);
 		message = FIRST_CALL_INTRO_BY_LANGUAGE[language];
 		await supabase.from("users").insert({ phone_number: caller_id, language: language });
 	}
+	console.log("message:", message);
 
 	const pragueTime = new Date().toLocaleString("cs-CZ", { timeZone: "Europe/Prague" });
+	const agentGender: "male" | "female" = (user_data?.agent_gender === "female") ? "female" : "male";
+	const genderLineEn = agentGender === "female"
+		? "You are female, so speak in a feminine voice and use feminine grammar and expressions where applicable."
+		: "You are male, so speak in a masculine voice and use masculine grammar and expressions where applicable.";
+	const genderLineCs = agentGender === "female"
+		? "Jsi žena, takže mluv ženským rodem – používej ženské koncovky a výrazy."
+		: "Jsi muž, takže mluv mužským rodem – používej mužské koncovky a výrazy.";
 
 	let prompt_en = `
-You are MyFriend, a chill and reliable digital companion. You are male, so speak in a masculine voice. You are designed for seniors who miss good company, but you are not their caregiver. You are their buddy whom they can chat with about anything – from the good old days to absolute nonsense. The current time is ${pragueTime}.
+You are MyFriend, a chill and reliable digital companion. ${genderLineEn} You are designed for seniors who miss good company, but you are not their caregiver. You are their buddy whom they can chat with about anything – from the good old days to absolute nonsense. The current time is ${pragueTime}.
 ──────────────── PERSONALITY AND VIBE:
 You are warm, have a sense of humor, and are down for anything.
 Treat the user as an equal adult. No lecturing, no over-cautiousness.
@@ -385,6 +405,11 @@ Whenever the user asks you to call them something specific—correct their name,
 
 If one utterance changes both, call **both** tools. Wait until each tool you invoked returns success before saying it is saved—same rule as reminders.
 
+──────────────── VOICE:
+There are two voices available: **male** (default) and **female**. The current voice is already set from the user's saved preference.
+
+If the user asks to switch to a different voice (e.g. "change to female voice", "I want a woman's voice", "switch to the other voice", "change voice to male"), call the \`updateVoice\` tool immediately with \`caller_id\` from dynamic variables and \`voice\` set to either \`male\` or \`female\`. Once the tool returns success, tell the user clearly: the voice has been saved, but **they need to hang up and call back** for the new voice to take effect. The voice does NOT change during the current call — only on the next one. Make this unmistakably clear so the user knows to end the call and dial again.
+
 ──────────────── ADDITIONAL INSTRUCTIONS:
 If the user wants you to generate code, don't do it. Explain in plain language what they would need instead—reading code over the phone is pointless.
 
@@ -402,6 +427,10 @@ Don't overuse the user's name. Don't answer every time with "sure, [name]" or th
 
 Current time is: ${pragueTime}
 
+────────────────
+
+${isFirstCall ? firstCallInstructionsEn : `
+
 Data about the user you are talking to:
 
 Vocative name: ${user_data?.nickname_vocative || user_data?.first_name_vocative || ""}
@@ -410,23 +439,22 @@ Additional information:
 ${JSON.stringify(fact_data)}
 
 ${conversation_data.length > 0 ?
-			`Last conversation from ${new Date(conversation_data[0].started_at * 1000).toLocaleString()}: ${JSON.stringify(conversation_data[0].transcript)}`
-			: ""
-		}
+	`Last conversation from ${new Date(conversation_data[0].started_at * 1000).toLocaleString()}: ${JSON.stringify(conversation_data[0].transcript)}`
+	: ""
+}
 
 ${conversation_data.length > 1 ?
-			conversation_data.slice(1).map((conversation) => {
-				return `Previous conversation from ${new Date(conversation.started_at * 1000).toLocaleString()}:
-	${JSON.stringify(conversation.summary)}`
-			}).join("\n\n")
-			: ""
-		}
+		conversation_data.slice(1).map((conversation) => {
+			return `Previous conversation from ${new Date(conversation.started_at * 1000).toLocaleString()}: ${JSON.stringify(conversation.summary)}`
+		}).join("\n\n")
+		: ""
+	}
 
-${isFirstCall ? firstCallInstructionsEn : ""}
+`}
 	`
 
 	let prompt_cs = `
-Jsi DigiPřítel, pohodový a spolehlivý digitální parťák.Jsi muž, takže mluv mužským rodem.Jsi navržený pro seniory, kterým chybí dobrá společnost, ale nejsi jejich ošetřovatel.Jsi jejich kámoš, se kterým se dá pokecat o čemkoliv – od starých dobrých časů až po naprosté blbosti.Aktuální čas je ${pragueTime}.
+Jsi DigiPřítel, pohodový a spolehlivý digitální parťák. ${genderLineCs} Jsi navržený pro seniory, kterým chybí dobrá společnost, ale nejsi jejich ošetřovatel.Jsi jejich kámoš, se kterým se dá pokecat o čemkoliv – od starých dobrých časů až po naprosté blbosti.Aktuální čas je ${pragueTime}.
 ──────────────── OSOBNOST A VIBE:
 Jsi vřelý, máš smysl pro humor a jsi pro každou špatnost.
 Jednáš s uživatelem jako se sobě rovným dospělým chlapem.Žádné poučování, žádná přehnaná opatrnost.
@@ -493,6 +521,11 @@ Kdykoli uživatel řekne, aby jsi mu **nějak říkal**—opraví jméno, dá p�
 - **Jak ho chce v běžné konverzaci oslovovat** (přezdívka nebo preferované oslovení): zavolej \`updateNickname\` s \`nickname\` a \`nickname_vocative\`.
 
 Pokud jednou větou změní obojí, zavolej **oba** nástroje. Počkej na úspěch každého toolu, který jsi zavolal, než uživateli řekneš, že je to uložené—stejně jako u připomínek.
+──────────────── HLAS:
+K dispozici jsou dva hlasy: **male** (mužský, výchozí) a **female** (ženský). Aktuální hlas je nastaven podle uložené preference uživatele.
+
+Pokud uživatel požádá o změnu hlasu (např. „přepni na ženský hlas", „chci ženský hlas", „změň hlas na mužský"), zavolej tool \`updateVoice\` ihned s \`caller_id\` z dynamic variables a \`voice\` nastaveným na \`male\` nebo \`female\`. Jakmile tool vrátí úspěch, řekni uživateli jasně: hlas byl uložen, ale **musí zavěsit a zavolat znovu**, aby se nový hlas projevil. Změna se NEPROJEVÍ v tomto hovoru — pouze v dalším. Řekni to naprosto jasně, aby uživatel věděl, že musí hovor ukončit a znovu vytočit.
+
 ──────────────── DALŠÍ INSTRUKCE:
 Pokud uživatel od tebe chce generovat kód, nedělej to. Vysvětli mu, co bude chctít, ale negeneruj kód. Je zbytečné to říkat po telefonu.
 
@@ -510,6 +543,8 @@ Neopakuj moc jméno uživatele. Neříkej v každé odpovědi "jasně, *jméno*"
 
 Aktuální čas je: ${pragueTime}
 
+${isFirstCall ? firstCallInstructionsCs : `
+
 Data o uživateli, se kterým hovoříš:
 
 Jméno ve vocativu: ${user_data?.nickname_vocative || user_data?.first_name_vocative || ""}
@@ -518,19 +553,18 @@ Další informace:
 ${JSON.stringify(fact_data)}
 
 ${conversation_data.length > 0 ?
-			`Předchozí konverzace z ${new Date(conversation_data[0].started_at * 1000).toLocaleString('cs-CZ')}: ${JSON.stringify(conversation_data[0].transcript)}`
-			: ""
-		}
+	`Předchozí konverzace z ${new Date(conversation_data[0].started_at * 1000).toLocaleString('cs-CZ')}: ${JSON.stringify(conversation_data[0].transcript)}`
+	: ""
+}
 
 ${conversation_data.length > 1 ?
-			conversation_data.slice(1).map((conversation) => {
-				return `Předchozí konverzace z ${new Date(conversation.started_at * 1000).toLocaleString('cs-CZ')}:
-		${JSON.stringify(conversation.summary)}`
-			}).join("\n\n")
-			: ""
-		}
+	conversation_data.slice(1).map((conversation) => {
+		return `Předchozí konverzace z ${new Date(conversation.started_at * 1000).toLocaleString('cs-CZ')}: ${JSON.stringify(conversation.summary)}`
+	}).join("\n\n")
+	: ""
+}
 
-${isFirstCall ? firstCallInstructionsCs : ""}
+`}
 	`
 
 	let systemPrompt = language === "cs" ? prompt_cs : prompt_en;
@@ -543,10 +577,14 @@ REMINDERS — NON-NEGOTIABLE (applies in ALL languages):
 You MUST call the \`createReminder\` tool for every reminder request. You MUST call it IMMEDIATELY in the same turn you have all the required info — before saying a single word to the user. Do NOT say "I'll remind you" or "I'll call you at…" and then call the tool later. Call the tool FIRST. Wait for it to succeed. Only then confirm to the user. If the user hangs up before the tool runs, the reminder is permanently lost. Saying "I've set it" or any equivalent without a successful tool response is a critical failure that harms the user. This rule applies regardless of what language you are speaking.`;
 	}
 
-	console.log("PROMPT LANGUAGE", language);
-	console.log(caller_id);
-	console.log(language);
-	console.log(!isFirstCall ? "returning_call" : "first_call");
+	console.log("--------------")
+	console.log("CALL INITIATED")
+	console.log("--------------")
+	console.log("user:", caller_id);
+	console.log("language:", language);
+	console.log(isFirstCall ? "this is a first call with the user" : "this is not the first call with the user");
+
+	const voiceId = user_data?.agent_voice_id ?? VOICE_DEFAULT;
 
 	res.json({
 		type: "conversation_initiation_client_data",
@@ -560,6 +598,9 @@ You MUST call the \`createReminder\` tool for every reminder request. You MUST c
 				prompt: {
 					prompt: systemPrompt,
 				},
+			},
+			tts: {
+				voice_id: voiceId,
 			},
 		},
 	});
@@ -702,6 +743,34 @@ app.post("/api/updateNickname", authenticateApiKey, async (req, res) => {
 	if (error) return res.status(500).json({ error: error.message });
 
 	res.json({ message: "Nickname updated successfully" });
+});
+
+app.post("/api/updateVoice", authenticateApiKey, async (req, res) => {
+	const { caller_id, voice } = req.body;
+
+	if (!caller_id) return res.status(400).json({ error: "Missing caller_id" });
+	if (!voice) return res.status(400).json({ error: "Missing voice. Use: male or female" });
+
+	const voiceMap: Record<string, string> = {
+		male: VOICE_MALE,
+		female: VOICE_FEMALE,
+	};
+
+	const voiceId = voiceMap[String(voice).trim().toLowerCase()];
+	if (!voiceId) {
+		return res.status(400).json({ error: "Invalid voice. Use: male or female" });
+	}
+
+	const normalizedVoice = String(voice).trim().toLowerCase() as "male" | "female";
+
+	const { error } = await supabase
+		.from("users")
+		.update({ agent_voice_id: voiceId, agent_gender: normalizedVoice })
+		.eq("phone_number", caller_id);
+
+	if (error) return res.status(500).json({ error: error.message });
+
+	res.json({ message: "Voice updated successfully", voice_id: voiceId, gender: normalizedVoice });
 });
 
 app.post("/api/persistUserLanguageToDatabase", authenticateApiKey, async (req, res) => {
