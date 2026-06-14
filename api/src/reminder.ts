@@ -279,7 +279,6 @@ app.post("/api/createReminder", authenticateApiKey, async (req, res) => {
 	if (!timezoneResult.ok) {
 		return res.status(timezoneResult.status).json({
 			error: timezoneResult.error,
-			inference_reason: timezoneResult.inference_reason,
 		});
 	}
 	const timezone = timezoneResult.timezone;
@@ -527,7 +526,6 @@ app.patch("/api/updateReminder", authenticateApiKey, async (req, res) => {
 		if (!timezoneResult.ok) {
 			return res.status(timezoneResult.status).json({
 				error: timezoneResult.error,
-				inference_reason: timezoneResult.inference_reason,
 			});
 		}
 		timezone = timezoneResult.timezone;

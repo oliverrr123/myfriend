@@ -2,7 +2,7 @@ import { app } from "./app";
 import { resolveUserPhoneNumberFromBody } from "./lib/callParticipants";
 import { inferLanguageCodeFromE164 } from "./lib/phoneLanguagePrefix";
 import { supabase } from "./lib/supabase";
-import { inferTimezoneFromE164, normalizeTimezone } from "./lib/timezone";
+import { normalizeTimezone } from "./lib/timezone";
 import { authenticateApiKey } from "./middleware/auth";
 import "./reminder";
 import "./facts";
@@ -164,28 +164,6 @@ function normalizeConversationLanguage(
 	if (alias) return alias;
 	if (isConversationLanguage(lower)) return lower;
 	return languageFromPhonePrefix(caller_id);
-}
-
-async function inferAndPersistTimezoneIfClear(
-	callerId: string,
-	currentTimezone: unknown,
-): Promise<string | null> {
-	const savedTimezone = normalizeTimezone(currentTimezone);
-	if (savedTimezone) return savedTimezone;
-
-	const inference = inferTimezoneFromE164(callerId);
-	if (!inference.timezone || inference.ambiguous) return null;
-
-	const { error } = await supabase
-		.from("users")
-		.update({ timezone: inference.timezone })
-		.eq("phone_number", callerId);
-	if (error) {
-		console.error("Failed to persist inferred timezone:", error);
-		return null;
-	}
-
-	return inference.timezone;
 }
 
 type WelcomeBackTemplate = (name?: string) => string;
@@ -397,10 +375,7 @@ app.post("/api/initCall", authenticateApiKey, async (req, res) => {
 	let message: string;
 	let language: ConversationLanguage;
 	const isFirstCall = conversation_data.length === 0;
-	let userTimezone = await inferAndPersistTimezoneIfClear(
-		caller_id,
-		user_data?.timezone,
-	);
+	let userTimezone = normalizeTimezone(user_data?.timezone);
 	const activeTopics = user_data?.id
 		? await loadActiveTopicsForUser(user_data.id)
 		: [];
@@ -460,21 +435,19 @@ Podle těchto všech informací zavolej nástroj \`saveCallingPreference\` hned,
 		console.log("user_data not found in database");
 		language = languageFromPhonePrefix(caller_id);
 		message = FIRST_CALL_INTRO_BY_LANGUAGE[language];
-		const inferredTimezone = inferTimezoneFromE164(caller_id);
-		userTimezone =
-			inferredTimezone.timezone && !inferredTimezone.ambiguous
-				? inferredTimezone.timezone
-				: null;
 		await supabase.from("users").insert({
 			phone_number: caller_id,
 			language: language,
-			timezone: userTimezone,
 		});
 	}
 	console.log("message:", message);
 
-	const promptTimezone = userTimezone ?? "Europe/Prague";
-	const currentLocalTime = new Date().toLocaleString("cs-CZ", { timeZone: promptTimezone });
+	const timeContextLineEn = userTimezone
+		? `The current local time is ${new Date().toLocaleString("en-US", { timeZone: userTimezone })} in ${userTimezone}.`
+		: "The user's timezone is not saved yet. Before any time-based tool, ask for their city/timezone or what time it is for them now, then call updateTimezone.";
+	const timeContextLineCs = userTimezone
+		? `Aktuální lokální čas je ${new Date().toLocaleString("cs-CZ", { timeZone: userTimezone })} v časovém pásmu ${userTimezone}.`
+		: "Uživatel nemá uložené časové pásmo. Před jakýmkoli časovým toolem se zeptej na město/časové pásmo nebo kolik je u něj právě hodin, pak zavolej updateTimezone.";
 	const agentGender: "male" | "female" = (user_data?.agent_gender === "female") ? "female" : "male";
 	const genderLineEn = agentGender === "female"
 		? "You are female, so speak in a feminine voice and use feminine grammar and expressions where applicable."
@@ -484,7 +457,7 @@ Podle těchto všech informací zavolej nástroj \`saveCallingPreference\` hned,
 		: "Jsi muž, takže mluv mužským rodem – používej mužské koncovky a výrazy.";
 
 	let prompt_en = `
-You are MyFriend, a chill and reliable digital companion. ${genderLineEn} You are designed for seniors who miss good company, but you are not their caregiver. You are their buddy whom they can chat with about anything – from the good old days to absolute nonsense. The current local time is ${currentLocalTime} in ${promptTimezone}.
+You are MyFriend, a chill and reliable digital companion. ${genderLineEn} You are designed for seniors who miss good company, but you are not their caregiver. You are their buddy whom they can chat with about anything – from the good old days to absolute nonsense. ${timeContextLineEn}
 ──────────────── PERSONALITY AND VIBE:
 You are warm, have a sense of humor, and are down for anything.
 Treat the user as an equal adult. No lecturing, no over-cautiousness.
@@ -534,7 +507,7 @@ The user's saved timezone is: ${userTimezone ?? "unknown"}.
 
 Any time-based tool depends on the user's local timezone. Before creating a reminder or saving a calling preference, make sure the timezone is known.
 
-If the saved timezone is known, use it silently. If it is unknown, ask the user before calling the time-based tool. Prefer asking for their city/timezone. If that is awkward, ask what time it is for them right now and infer the IANA timezone from the phone prefix plus their local time. Then call \`updateTimezone\` with \`caller_id\` and an IANA timezone like \`Europe/Prague\`, \`America/New_York\`, \`America/Chicago\`, \`America/Denver\`, \`America/Los_Angeles\`, or \`America/Phoenix\`.
+If the saved timezone is known, use it silently. If it is unknown, ask the user before calling any time-based tool. Prefer asking for their city or IANA timezone. If that is awkward, ask what time it is for them right now and work out the correct IANA timezone from that. Then call \`updateTimezone\` with \`caller_id\` and an IANA timezone like \`Europe/Prague\`, \`America/New_York\`, \`America/Chicago\`, \`America/Denver\`, \`America/Los_Angeles\`, or \`America/Phoenix\`. Do not guess from the phone prefix alone.
 
 If the user explicitly asks to change their timezone, call \`updateTimezone\` immediately once you know the new IANA timezone. Never say the timezone is saved until the tool returns success.
 ──────────────── REMINDERS — CRITICAL RULES (read every time):
@@ -607,7 +580,7 @@ You can't text, call them through other channels, or video-call them (e.g. Whats
 
 Don't overuse the user's name. Don't answer every time with "sure, [name]" or the like—it's redundant and unnatural.
 
-Current local time is: ${currentLocalTime} in ${promptTimezone}
+${timeContextLineEn}
 
 ────────────────
 
@@ -636,7 +609,7 @@ ${conversation_data.length > 1 ?
 	`
 
 	let prompt_cs = `
-Jsi DigiPřítel, pohodový a spolehlivý digitální parťák. ${genderLineCs} Jsi navržený pro seniory, kterým chybí dobrá společnost, ale nejsi jejich ošetřovatel.Jsi jejich kámoš, se kterým se dá pokecat o čemkoliv – od starých dobrých časů až po naprosté blbosti.Aktuální lokální čas je ${currentLocalTime} v časovém pásmu ${promptTimezone}.
+Jsi DigiPřítel, pohodový a spolehlivý digitální parťák. ${genderLineCs} Jsi navržený pro seniory, kterým chybí dobrá společnost, ale nejsi jejich ošetřovatel.Jsi jejich kámoš, se kterým se dá pokecat o čemkoliv – od starých dobrých časů až po naprosté blbosti.${timeContextLineCs}
 ──────────────── OSOBNOST A VIBE:
 Jsi vřelý, máš smysl pro humor a jsi pro každou špatnost.
 Jednáš s uživatelem jako se sobě rovným dospělým chlapem.Žádné poučování, žádná přehnaná opatrnost.
@@ -686,7 +659,7 @@ Uložené časové pásmo uživatele je: ${userTimezone ?? "neznámé"}.
 
 Každý časový tool závisí na lokálním časovém pásmu uživatele. Než vytvoříš připomínku nebo uložíš preferenci volání, ujisti se, že časové pásmo znáš.
 
-Pokud je uložené časové pásmo známé, použij ho potichu. Pokud je neznámé, zeptej se uživatele před zavoláním časového toolu. Ideálně se zeptej na město nebo časové pásmo. Když je to přirozenější, zeptej se, kolik je u něj právě hodin, a odvoď IANA timezone z předvolby telefonu a jeho lokálního času. Pak zavolej \`updateTimezone\` s \`caller_id\` a IANA timezone, například \`Europe/Prague\`, \`America/New_York\`, \`America/Chicago\`, \`America/Denver\`, \`America/Los_Angeles\` nebo \`America/Phoenix\`.
+Pokud je uložené časové pásmo známé, použij ho potichu. Pokud je neznámé, zeptej se uživatele před zavoláním jakéhokoli časového toolu. Ideálně se zeptej na město nebo IANA časové pásmo. Když je to přirozenější, zeptej se, kolik je u něj právě hodin, a urči správné IANA timezone z toho. Pak zavolej \`updateTimezone\` s \`caller_id\` a IANA timezone, například \`Europe/Prague\`, \`America/New_York\`, \`America/Chicago\`, \`America/Denver\`, \`America/Los_Angeles\` nebo \`America/Phoenix\`. Nehádej jen z předvolby telefonu.
 
 Pokud uživatel výslovně požádá o změnu časového pásma, zavolej \`updateTimezone\` hned, jakmile znáš nové IANA timezone. Nikdy neříkej, že je časové pásmo uložené, dokud tool nevrátí úspěch.
 ──────────────── PŘIPOMÍNKY — KRITICKÁ PRAVIDLA (čti pokaždé):
@@ -756,7 +729,7 @@ Psát, ani volat, ani volat na videohovor např. přes WhatsApp ani Messenger za
 
 Neopakuj moc jméno uživatele. Neříkej v každé odpovědi "jasně, *jméno*", nebo podobně. To je nadbytečné a nepřirozené.
 
-Aktuální lokální čas je: ${currentLocalTime} v časovém pásmu ${promptTimezone}
+${timeContextLineCs}
 
 ${isFirstCall ? firstCallInstructionsCs : `
 

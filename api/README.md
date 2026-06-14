@@ -144,9 +144,9 @@ Express.js API server for MyFriend - a companion application for elderly users.
    does not store agent details.
 
    Reminders and friendly calling preferences use `users.timezone` for local
-   scheduling. The server infers it from phone prefix only when the prefix maps
-   clearly to one timezone. If the prefix covers multiple zones, such as `+1`,
-   the agent should ask the user and then call `/api/updateTimezone`.
+   scheduling. The timezone is never inferred automatically — the agent should
+   ask the user and call `/api/updateTimezone` before creating reminders or
+   calling preferences.
 
    Enable Row Level Security with `supabase-rls.sql`:
 

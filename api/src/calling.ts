@@ -344,7 +344,6 @@ app.post("/api/saveCallingPreference", authenticateApiKey, async (req, res) => {
 	if (!timezoneResult.ok) {
 		return res.status(timezoneResult.status).json({
 			error: timezoneResult.error,
-			inference_reason: timezoneResult.inference_reason,
 		});
 	}
 
