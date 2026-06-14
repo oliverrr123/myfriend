@@ -1,13 +1,12 @@
 import { app } from "./app";
+import { resolveUserPhoneNumberFromBody } from "./lib/callParticipants";
 import { supabase } from "./lib/supabase";
 import { authenticateApiKey } from "./middleware/auth";
 
 // Create a fact
 app.post("/api/createFact", authenticateApiKey, async (req, res) => {
-    const {
-        caller_id,
-        fact_text,
-    } = req.body;
+    const { fact_text } = req.body;
+    const caller_id = resolveUserPhoneNumberFromBody(req.body);
 
     // Validate required fields with detailed error messages
     if (!caller_id) {

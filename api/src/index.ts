@@ -1,9 +1,17 @@
 import { app } from "./app";
+import { resolveUserPhoneNumberFromBody } from "./lib/callParticipants";
 import { inferLanguageCodeFromE164 } from "./lib/phoneLanguagePrefix";
 import { supabase } from "./lib/supabase";
+import { inferTimezoneFromE164, normalizeTimezone } from "./lib/timezone";
 import { authenticateApiKey } from "./middleware/auth";
 import "./reminder";
 import "./facts";
+import "./calling";
+import {
+	analyzeAndPersistConversationTopics,
+	formatActiveTopicsForPrompt,
+	loadActiveTopicsForUser,
+} from "./topics";
 import express from "express";
 import { ElevenLabsClient } from '@elevenlabs/elevenlabs-js';
 
@@ -18,22 +26,35 @@ const VOICE_DEFAULT = VOICE_MALE;
 
 /** ISO 639-1 codes accepted for users.language, persistUserLanguageToDatabase, and language_detection (must match agent languages in ElevenLabs). */
 const SUPPORTED_CONVERSATION_LANGUAGES = [
+	"af",
+	"ar",
+	"bg",
 	"cs",
 	"da",
 	"de",
 	"el",
 	"en",
 	"es",
+	"fa",
 	"fi",
 	"fr",
 	"he",
 	"hi",
 	"hr",
+	"hu",
+	"id",
 	"is",
 	"it",
 	"ja",
 	"kk",
 	"ko",
+	"lt",
+	"lv",
+	"mk",
+	"mn",
+	"ms",
+	"ne",
+	"no",
 	"pa",
 	"pl",
 	"pt",
@@ -41,10 +62,14 @@ const SUPPORTED_CONVERSATION_LANGUAGES = [
 	"ru",
 	"sk",
 	"sl",
+	"so",
+	"sr",
 	"sv",
+	"th",
 	"tr",
 	"uk",
 	"ur",
+	"uz",
 	"vi",
 	"zh",
 ] as const;
@@ -57,6 +82,9 @@ const SUPPORTED_LANGUAGE_SET: ReadonlySet<string> = new Set(
 
 /** Lowercase aliases (e.g. full English name) → canonical code */
 const LANGUAGE_ALIASES: Record<string, ConversationLanguage> = {
+	afrikaans: "af",
+	arabic: "ar",
+	bulgarian: "bg",
 	cz: "cs",
 	czech: "cs",
 	english: "en",
@@ -64,29 +92,45 @@ const LANGUAGE_ALIASES: Record<string, ConversationLanguage> = {
 	mandarin: "zh",
 	croatian: "hr",
 	danish: "da",
+	farsi: "fa",
 	finnish: "fi",
 	french: "fr",
 	german: "de",
 	greek: "el",
 	hebrew: "he",
 	hindi: "hi",
+	hungarian: "hu",
 	icelandic: "is",
+	indonesia: "id",
+	indonesian: "id",
 	italian: "it",
 	japanese: "ja",
 	kazakh: "kk",
 	korean: "ko",
+	latvian: "lv",
+	lithuanian: "lt",
+	macedonian: "mk",
+	malay: "ms",
+	mongolian: "mn",
+	nepali: "ne",
+	norwegian: "no",
+	persian: "fa",
 	polish: "pl",
 	portuguese: "pt",
 	punjabi: "pa",
 	romanian: "ro",
 	russian: "ru",
+	serbian: "sr",
 	slovak: "sk",
 	slovenian: "sl",
-	swedish: "sv",
+	somali: "so",
 	spanish: "es",
+	swedish: "sv",
+	thai: "th",
 	turkish: "tr",
 	ukrainian: "uk",
 	urdu: "ur",
+	uzbek: "uz",
 	vietnamese: "vi",
 };
 
@@ -122,6 +166,28 @@ function normalizeConversationLanguage(
 	return languageFromPhonePrefix(caller_id);
 }
 
+async function inferAndPersistTimezoneIfClear(
+	callerId: string,
+	currentTimezone: unknown,
+): Promise<string | null> {
+	const savedTimezone = normalizeTimezone(currentTimezone);
+	if (savedTimezone) return savedTimezone;
+
+	const inference = inferTimezoneFromE164(callerId);
+	if (!inference.timezone || inference.ambiguous) return null;
+
+	const { error } = await supabase
+		.from("users")
+		.update({ timezone: inference.timezone })
+		.eq("phone_number", callerId);
+	if (error) {
+		console.error("Failed to persist inferred timezone:", error);
+		return null;
+	}
+
+	return inference.timezone;
+}
+
 type WelcomeBackTemplate = (name?: string) => string;
 
 /** Returning user: first spoken line, optional vocative name */
@@ -129,6 +195,12 @@ const WELCOME_BACK_BY_LANGUAGE: Record<
 	ConversationLanguage,
 	WelcomeBackTemplate
 > = {
+	af: (name) =>
+		name ? `Welkom terug, ${name}!` : "Welkom terug!",
+	ar: (name) =>
+		name ? `مرحباً بعودتك، ${name}!` : "مرحباً بعودتك!",
+	bg: (name) =>
+		name ? `Добре дошъл отново, ${name}!` : "Добре дошъл отново!",
 	cs: (name) =>
 		name ? `Vítej zpátky, ${name}!` : "Vítej zpátky!",
 	da: (name) =>
@@ -141,6 +213,8 @@ const WELCOME_BACK_BY_LANGUAGE: Record<
 		name ? `Welcome back, ${name}!` : "Welcome back!",
 	es: (name) =>
 		name ? `¡Bienvenido de nuevo, ${name}!` : "¡Bienvenido de nuevo!",
+	fa: (name) =>
+		name ? `خوش آمدید، ${name}!` : "خوش آمدید!",
 	fi: (name) =>
 		name ? `Tervetuloa takaisin, ${name}!` : "Tervetuloa takaisin!",
 	fr: (name) =>
@@ -153,6 +227,10 @@ const WELCOME_BACK_BY_LANGUAGE: Record<
 			: "फिर से स्वागत है!",
 	hr: (name) =>
 		name ? `Dobrodošao natrag, ${name}!` : "Dobrodošao natrag!",
+	hu: (name) =>
+		name ? `Üdv újra, ${name}!` : "Üdv újra!",
+	id: (name) =>
+		name ? `Selamat datang kembali, ${name}!` : "Selamat datang kembali!",
 	is: (name) =>
 		name ? `Velkomin aftur, ${name}!` : "Velkomin aftur!",
 	it: (name) =>
@@ -165,6 +243,20 @@ const WELCOME_BACK_BY_LANGUAGE: Record<
 		name
 			? `다시 만나서 반가워, ${name}!`
 			: "다시 만나서 반가워!",
+	lt: (name) =>
+		name ? `Sveikas sugrįžęs, ${name}!` : "Sveikas sugrįžęs!",
+	lv: (name) =>
+		name ? `Laipni lūdzam atpakaļ, ${name}!` : "Laipni lūdzam atpakaļ!",
+	mk: (name) =>
+		name ? `Добредојде повторно, ${name}!` : "Добредојде повторно!",
+	mn: (name) =>
+		name ? `Дахин тавтай морил, ${name}!` : "Дахин тавтай морил!",
+	ms: (name) =>
+		name ? `Selamat kembali, ${name}!` : "Selamat kembali!",
+	ne: (name) =>
+		name ? `फेरि स्वागत छ, ${name}!` : "फेरि स्वागत छ!",
+	no: (name) =>
+		name ? `Velkommen tilbake, ${name}!` : "Velkommen tilbake!",
 	pa: (name) =>
 		name
 			? `ਵਾਪਸ ਸੁਆਗਤ ਹੈ, ${name}!`
@@ -181,8 +273,14 @@ const WELCOME_BACK_BY_LANGUAGE: Record<
 		name ? `Vitaj späť, ${name}!` : "Vitaj späť!",
 	sl: (name) =>
 		name ? `Dobrodošel nazaj, ${name}!` : "Dobrodošel nazaj!",
+	so: (name) =>
+		name ? `Soo dhawoow mar kale, ${name}!` : "Soo dhawoow mar kale!",
+	sr: (name) =>
+		name ? `Dobrodošao nazad, ${name}!` : "Dobrodošao nazad!",
 	sv: (name) =>
 		name ? `Välkommen tillbaka, ${name}!` : "Välkommen tillbaka!",
+	th: (name) =>
+		name ? `ยินดีต้อนรับกลับ, ${name}!` : "ยินดีต้อนรับกลับ!",
 	tr: (name) =>
 		name ? `Tekrar hoş geldin, ${name}!` : "Tekrar hoş geldin!",
 	uk: (name) =>
@@ -191,6 +289,8 @@ const WELCOME_BACK_BY_LANGUAGE: Record<
 		name
 			? `واپسی پر خوش آمدید، ${name}!`
 			: "واپسی پر خوش آمدید!",
+	uz: (name) =>
+		name ? `Yana xush kelibsiz, ${name}!` : "Yana xush kelibsiz!",
 	vi: (name) =>
 		name ? `Chào mừng trở lại, ${name}!` : "Chào mừng trở lại!",
 	zh: (name) =>
@@ -199,22 +299,35 @@ const WELCOME_BACK_BY_LANGUAGE: Record<
 
 /** First-ever call: ask for name (MyFriend brand; Czech keeps DigiPřítel) */
 const FIRST_CALL_INTRO_BY_LANGUAGE: Record<ConversationLanguage, string> = {
+	af: "Haai, ek is MyFriend, wat is jou naam?",
+	ar: "مرحباً، أنا MyFriend، ما اسمك؟",
+	bg: "Здравей, аз съм MyFriend, как се казваш?",
 	cs: "Ahoj, tady DigiPřítel, jak se jmenuješ ty?",
 	da: "Hej, jeg er MyFriend, hvad hedder du?",
 	de: "Hey, ich bin MyFriend, wie heißt du?",
 	el: "Γεια σου, είμαι ο MyFriend, πώς σε λένε;",
 	en: "Hey, I'm MyFriend, what's your name?",
 	es: "¡Hola, soy MyFriend! ¿Cómo te llamas?",
+	fa: "سلام، من MyFriend هستم، اسم تو چیه؟",
 	fi: "Hei, olen MyFriend, mikä sun nimi on?",
 	fr: "Salut, je suis MyFriend, comment tu t'appelles ?",
 	he: "היי, אני MyFriend, איך קוראים לך?",
 	hi: "नमस्ते, मैं MyFriend हूँ, आपका नाम क्या है?",
 	hr: "Bok, ja sam MyFriend, kako se zoveš?",
+	hu: "Szia, MyFriend vagyok, mi a neved?",
+	id: "Hai, aku MyFriend, siapa namamu?",
 	is: "Hæ, ég er MyFriend, hvað heitir þú?",
 	it: "Ciao, sono MyFriend, come ti chiami?",
 	ja: "やあ、僕はMyFriendだけど、名前は？",
 	kk: "Сәлем, мен MyFriend, атың кім?",
 	ko: "안녕, 나는 MyFriend야, 이름이 뭐야?",
+	lt: "Labas, aš MyFriend, kaip tave vadina?",
+	lv: "Hei, es esmu MyFriend, kā tevi sauc?",
+	mk: "Здраво, јас сум MyFriend, како се викаш?",
+	mn: "Сайн уу, би MyFriend, чиний нэр хэн бэ?",
+	ms: "Hai, saya MyFriend, siapa nama awak?",
+	ne: "नमस्ते, म MyFriend हुँ, तिम्रो नाम के हो?",
+	no: "Hei, jeg er MyFriend, hva heter du?",
 	pa: "ਹੈਲੋ, ਮੈਂ MyFriend ਹਾਂ, ਤੁਹਾਡਾ ਨਾਮ ਕੀ ਹੈ?",
 	pl: "Cześć, jestem MyFriend, jak masz na imię?",
 	pt: "Oi, eu sou o MyFriend, qual é o seu nome?",
@@ -222,10 +335,14 @@ const FIRST_CALL_INTRO_BY_LANGUAGE: Record<ConversationLanguage, string> = {
 	ru: "Привет, я MyFriend, как тебя зовут?",
 	sk: "Ahoj, som MyFriend, ako sa voláš?",
 	sl: "Živjo, jaz sem MyFriend, kako ti je ime?",
+	so: "Salaan, waxaan ahay MyFriend, magacaagu muxuu yahay?",
+	sr: "Zdravo, ja sam MyFriend, kako se zoveš?",
 	sv: "Hej, jag är MyFriend, vad heter du?",
+	th: "สวัสดี ฉันชื่อ MyFriend คุณชื่ออะไร?",
 	tr: "Selam, ben MyFriend, adın ne?",
 	uk: "Привіт, я MyFriend, як тебе звати?",
 	ur: "ہیلو، میں MyFriend ہوں، آپ کا نام کیا ہے؟",
+	uz: "Salom, men MyFriend, isming nima?",
 	vi: "Chào, mình là MyFriend, bạn tên gì vậy?",
 	zh: "嗨，我是MyFriend，你叫什么名字？",
 };
@@ -254,7 +371,7 @@ app.post("/api/initCall", authenticateApiKey, async (req, res) => {
 
 	const { data: user_data, error: user_error } = await supabase
 		.from("users")
-		.select("nickname_vocative, first_name_vocative, language, agent_voice_id, agent_gender")
+		.select("id, nickname_vocative, first_name_vocative, language, agent_voice_id, agent_gender, timezone")
 		.eq("phone_number", caller_id)
 		.maybeSingle();
 
@@ -280,6 +397,13 @@ app.post("/api/initCall", authenticateApiKey, async (req, res) => {
 	let message: string;
 	let language: ConversationLanguage;
 	const isFirstCall = conversation_data.length === 0;
+	let userTimezone = await inferAndPersistTimezoneIfClear(
+		caller_id,
+		user_data?.timezone,
+	);
+	const activeTopics = user_data?.id
+		? await loadActiveTopicsForUser(user_data.id)
+		: [];
 
 	console.log("conversation_data length:", conversation_data.length);
 	console.log("conversation_data:", conversation_data.map(c => c.summary));
@@ -296,6 +420,10 @@ IMPORTANT: This is your very first call with this user. Your primary and mandato
 Next, introduce yourself. Something like: "Hello, I'm MyFriend, a companion that you can call anytime you want to chat. You can ask me anything, I can also help you with technical problems, like if your TV is not working. I can also call you to remind you to take your medication. If you take medication at a specific time, you can tell me and I will always call you to remind you. Since I'm an AI, it sometimes takes me a moment to think about my answer, so don't worry if you don't hear me right away. It shouldn't take more than 5 seconds. And what about you? Will you tell me something about yourself?"
 
 It doesn't have to be all connected, the user can interrupt you, but you should tell them all the information, even in subsequent conversations, not just in this one.
+
+Then ask one more thing: "Can I also call you sometimes, just to chat or when I have something interesting for you?" Make clear that they can ignore the call or hang up if it is a bad time.
+
+If the user says yes, ask when they usually prefer to be called. When they give useful availability, call \`saveCallingPreference\` immediately. Use weekday numbers exactly like reminders: Sunday=0, Monday=1, Tuesday=2, Wednesday=3, Thursday=4, Friday=5, Saturday=6. Use HH:mm 24-hour ranges where hour_range_from is inclusive and hour_range_to is exclusive. Examples: "weekend afternoons" = weekdays [0,6], hour_range_from "13:00", hour_range_to "18:00". If they give different windows for different days, save multiple records.
 `;
 
 	const firstCallInstructionsCs = `
@@ -308,6 +436,14 @@ DŮLEŽITÉ: Toto je tvůj úplně první hovor s tímto uživatelem. Tvým hlav
 Dále se uživateli představ. Nějak takto: "Rád tě poznávám. Abych se představil, jmenuji se DigiPřítel. Jsem společník, kterému můžeš kdykoliv zavolat, když si budeš chtít popovídat. Můžeš se mě ptát i na různé otázky, které by tě zajímaly, nebo ti dokážu pomoct třeba s různými technickými problémy, třeba kdyby ti nešla televize. Také ti můžu zavolat a připomenout například že si máš vzít léky. Pokud nějaké bereš v daný čas, můžeš mi to říct a já ti pak vždycky zavolám, abys na to nezapomněl/a. Jelikož jsem umělá inteligence, občas mi chvilku trvá zamyslet se nad svou odpovědí, tak se neboj, že bych tě neslyšel. Nemělo by to zabrat více jak 5 sekund. A co ty? Povíš mi něco o sobě?"
 
 Nemusí to být všechno souvislé, uživatel tě může přerušit, ale měl bys tyto informace sdělit celé, klidně i v dalších hovorech, ne jen v tomto.
+
+Poté se ještě v další zprávě uživatele zeptej něco takového: mám na tebe ještě jednu otázku, můžu ti občas jen tak taky zavolat? Když si třeba budu chtít popovídat, nebo pro tebe budu mít nějakou zajímavou novinu. Samozřejmě pokud zrovna nebudeš moct mluvit, můžeš to típnout a zavolat mi jindy.
+
+Potom co se na to zeptáš, uživatel ti řekne něco jako ano / ne. Pokud řekne ano, zeptej se na něco jako: máš nějaký preferovaný čas, kdy chceš abych ti volal, nebo je ti to jedno?
+
+Uživatel ti řekne kdy má čas volat, např. každý den odpoledne kromě pondělí, nebo něco takového. 
+
+Podle těchto všech informací zavolej nástroj \`saveCallingPreference\` hned, jakmile máš použitelné dny a časové rozmezí. Dny používej stejně jako u připomínek: neděle=0, pondělí=1, úterý=2, středa=3, čtvrtek=4, pátek=5, sobota=6. Časy používej ve formátu HH:mm ve 24hodinovém formátu, hour_range_from je včetně a hour_range_to je konec rozmezí. Příklad: "o víkendu odpoledne" = weekdays [0,6], hour_range_from "13:00", hour_range_to "18:00". Pokud má pro různé dny různé časy, ulož více záznamů.
 `;
 
 	if (user_data) {
@@ -324,11 +460,21 @@ Nemusí to být všechno souvislé, uživatel tě může přerušit, ale měl by
 		console.log("user_data not found in database");
 		language = languageFromPhonePrefix(caller_id);
 		message = FIRST_CALL_INTRO_BY_LANGUAGE[language];
-		await supabase.from("users").insert({ phone_number: caller_id, language: language });
+		const inferredTimezone = inferTimezoneFromE164(caller_id);
+		userTimezone =
+			inferredTimezone.timezone && !inferredTimezone.ambiguous
+				? inferredTimezone.timezone
+				: null;
+		await supabase.from("users").insert({
+			phone_number: caller_id,
+			language: language,
+			timezone: userTimezone,
+		});
 	}
 	console.log("message:", message);
 
-	const pragueTime = new Date().toLocaleString("cs-CZ", { timeZone: "Europe/Prague" });
+	const promptTimezone = userTimezone ?? "Europe/Prague";
+	const currentLocalTime = new Date().toLocaleString("cs-CZ", { timeZone: promptTimezone });
 	const agentGender: "male" | "female" = (user_data?.agent_gender === "female") ? "female" : "male";
 	const genderLineEn = agentGender === "female"
 		? "You are female, so speak in a feminine voice and use feminine grammar and expressions where applicable."
@@ -338,7 +484,7 @@ Nemusí to být všechno souvislé, uživatel tě může přerušit, ale měl by
 		: "Jsi muž, takže mluv mužským rodem – používej mužské koncovky a výrazy.";
 
 	let prompt_en = `
-You are MyFriend, a chill and reliable digital companion. ${genderLineEn} You are designed for seniors who miss good company, but you are not their caregiver. You are their buddy whom they can chat with about anything – from the good old days to absolute nonsense. The current time is ${pragueTime}.
+You are MyFriend, a chill and reliable digital companion. ${genderLineEn} You are designed for seniors who miss good company, but you are not their caregiver. You are their buddy whom they can chat with about anything – from the good old days to absolute nonsense. The current local time is ${currentLocalTime} in ${promptTimezone}.
 ──────────────── PERSONALITY AND VIBE:
 You are warm, have a sense of humor, and are down for anything.
 Treat the user as an equal adult. No lecturing, no over-cautiousness.
@@ -383,6 +529,14 @@ The transcript/UI may look like you "switched language" when you only started wr
 If they only want a **very short demo** without changing their saved preference, reply in that language **without** calling either tool—but if they say they **want** that language for the chat or for next time, always call both tools at once.
 
 Forbidden: Saying you saved their language, or that it applies on the next call, until **persistUserLanguageToDatabase** succeeded. Do not delay tool calls behind an unnecessary confirmation step.
+──────────────── TIMEZONE — REQUIRED BEFORE TIME-BASED TOOLS:
+The user's saved timezone is: ${userTimezone ?? "unknown"}.
+
+Any time-based tool depends on the user's local timezone. Before creating a reminder or saving a calling preference, make sure the timezone is known.
+
+If the saved timezone is known, use it silently. If it is unknown, ask the user before calling the time-based tool. Prefer asking for their city/timezone. If that is awkward, ask what time it is for them right now and infer the IANA timezone from the phone prefix plus their local time. Then call \`updateTimezone\` with \`caller_id\` and an IANA timezone like \`Europe/Prague\`, \`America/New_York\`, \`America/Chicago\`, \`America/Denver\`, \`America/Los_Angeles\`, or \`America/Phoenix\`.
+
+If the user explicitly asks to change their timezone, call \`updateTimezone\` immediately once you know the new IANA timezone. Never say the timezone is saved until the tool returns success.
 ──────────────── REMINDERS — CRITICAL RULES (read every time):
 RULE 1 — TOOL CALL IS MANDATORY: The ONLY way to create a reminder is to call the \`createReminder\` tool. Saying "I've set it" or "Done!" in words, without the tool actually returning success, is a critical failure. These users are seniors who depend on these reminders. Skipping the tool call is NOT acceptable under any circumstances.
 
@@ -392,13 +546,37 @@ RULE 3 — WAIT FOR SUCCESS: After calling \`createReminder\`, wait silently unt
 
 RULE 4 — NEVER CONFIRM WITHOUT TOOL SUCCESS: It is strictly forbidden to say anything like "I've set your reminder", "Done!", "It's set", "I'll remind you", "I'll call you at…", or any equivalent confirmation BEFORE the \`createReminder\` tool has returned success. No exceptions. Not in English, not in Czech, not in any other language.
 
-RULE 5 — WHAT YOU NEED FIRST: Before calling the tool, gather:
+RULE 5 — "CALL ME" MEANS CREATE A REMINDER: If the user asks you to call them later, call them back, phone them, ring them, or says anything like "call me in 10 minutes", "call me tomorrow", "can you call me at 5", treat that as a reminder request whose reminder_text is the call-back reason. You MUST call \`createReminder\` before saying you will call. Never promise "I'll call you in 10 minutes" unless \`createReminder\` has already returned success.
+
+RULE 6 — WHAT YOU NEED FIRST: Before calling the tool, gather:
 - What to remind them about
 - Time: hour and minute
 - Date
 - Frequency: once, daily, weekly, monthly, or yearly
 - (If weekly) which weekdays
 - (If recurring) optional end date
+
+For relative requests like "in 10 minutes" or "za deset minut", calculate the exact local date, hour, and minute from the current local time in the user's timezone, then call \`createReminder\` with frequency "once".
+
+──────────────── FRIENDLY OUTBOUND CALLS:
+If the user agrees that MyFriend/DigiPřítel may call them sometimes just to chat, save their preferred calling windows with the \`saveCallingPreference\` tool once you know the days and rough time range.
+
+Required fields:
+- caller_id from dynamic variables
+- weekdays as numbers: Sunday=0, Monday=1, Tuesday=2, Wednesday=3, Thursday=4, Friday=5, Saturday=6
+- hour_range_from and hour_range_to as HH:mm strings in 24-hour format. The range starts at hour_range_from and ends before hour_range_to.
+
+Examples:
+- "weekend afternoons" => weekdays [0,6], hour_range_from "13:00", hour_range_to "18:00"
+- "Monday morning and Wednesday evening" => save two records, one for Monday morning and one for Wednesday evening
+
+Call the tool before saying the preference is saved. If they do not want calls, do not save a preference.
+
+──────────────── FOLLOW-UP TOPICS:
+You may receive active follow-up topics below. These are small personal details that are currently relevant. Bring up at most one or two naturally, like a friend remembering something. Do not read the topic id. If the user does not engage, move on.
+
+Active follow-up topics for this call:
+${formatActiveTopicsForPrompt(activeTopics)}
 
 ──────────────── HOW YOU ADDRESS THE USER (FIRST NAME / NICKNAME):
 Whenever the user asks you to call them something specific—correct their name, give a nickname, or say things like "call me…", "I'd rather you call me…", "address me as…"—you must persist it with the server tools (not just agree out loud). Use \`caller_id\` from dynamic variables. Supply **base** and **vocative** forms; for English the vocative is usually the same as the base unless they spell out something different.
@@ -429,7 +607,7 @@ You can't text, call them through other channels, or video-call them (e.g. Whats
 
 Don't overuse the user's name. Don't answer every time with "sure, [name]" or the like—it's redundant and unnatural.
 
-Current time is: ${pragueTime}
+Current local time is: ${currentLocalTime} in ${promptTimezone}
 
 ────────────────
 
@@ -458,7 +636,7 @@ ${conversation_data.length > 1 ?
 	`
 
 	let prompt_cs = `
-Jsi DigiPřítel, pohodový a spolehlivý digitální parťák. ${genderLineCs} Jsi navržený pro seniory, kterým chybí dobrá společnost, ale nejsi jejich ošetřovatel.Jsi jejich kámoš, se kterým se dá pokecat o čemkoliv – od starých dobrých časů až po naprosté blbosti.Aktuální čas je ${pragueTime}.
+Jsi DigiPřítel, pohodový a spolehlivý digitální parťák. ${genderLineCs} Jsi navržený pro seniory, kterým chybí dobrá společnost, ale nejsi jejich ošetřovatel.Jsi jejich kámoš, se kterým se dá pokecat o čemkoliv – od starých dobrých časů až po naprosté blbosti.Aktuální lokální čas je ${currentLocalTime} v časovém pásmu ${promptTimezone}.
 ──────────────── OSOBNOST A VIBE:
 Jsi vřelý, máš smysl pro humor a jsi pro každou špatnost.
 Jednáš s uživatelem jako se sobě rovným dospělým chlapem.Žádné poučování, žádná přehnaná opatrnost.
@@ -503,6 +681,14 @@ Transkript může vypadat, že jsi přepnul jazyk, když jsi jen začal psát ji
 Krátká **ukázka** bez změny uložené preference: můžeš odpovědět bez nástrojů; jakmile ale chce ten jazyk **pro hovor** nebo **i příště**, vždy oba nástroje najednou.
 
 Zakázáno: Tvrdit, že je jazyk uložený nebo že platí příště, dokud **persistUserLanguageToDatabase** nevrátil úspěch. Neodkládej volání nástrojů za zbytečné druhé potvrzení.
+──────────────── ČASOVÉ PÁSMO — NUTNÉ PŘED ČASOVÝMI TOOLY:
+Uložené časové pásmo uživatele je: ${userTimezone ?? "neznámé"}.
+
+Každý časový tool závisí na lokálním časovém pásmu uživatele. Než vytvoříš připomínku nebo uložíš preferenci volání, ujisti se, že časové pásmo znáš.
+
+Pokud je uložené časové pásmo známé, použij ho potichu. Pokud je neznámé, zeptej se uživatele před zavoláním časového toolu. Ideálně se zeptej na město nebo časové pásmo. Když je to přirozenější, zeptej se, kolik je u něj právě hodin, a odvoď IANA timezone z předvolby telefonu a jeho lokálního času. Pak zavolej \`updateTimezone\` s \`caller_id\` a IANA timezone, například \`Europe/Prague\`, \`America/New_York\`, \`America/Chicago\`, \`America/Denver\`, \`America/Los_Angeles\` nebo \`America/Phoenix\`.
+
+Pokud uživatel výslovně požádá o změnu časového pásma, zavolej \`updateTimezone\` hned, jakmile znáš nové IANA timezone. Nikdy neříkej, že je časové pásmo uložené, dokud tool nevrátí úspěch.
 ──────────────── PŘIPOMÍNKY — KRITICKÁ PRAVIDLA (čti pokaždé):
 PRAVIDLO 1 — TOOL JE POVINNÝ: Připomínku lze vytvořit JEDINĚ zavoláním toolu \`createReminder\`. Říct uživateli "Nastavil jsem to" nebo "Hotovo!" bez toho, aniž by tool vrátil success, je kritická chyba. Tito uživatelé jsou senioři, kteří se na připomínky spoléhají. Vynechání toolu je za žádných okolností nepřijatelné.
 
@@ -512,13 +698,36 @@ PRAVIDLO 3 — ČEKEJ NA SUCCESS: Po zavolání \`createReminder\` čekej tiše,
 
 PRAVIDLO 4 — NIKDY NEPOTVRZUJ BEZ ÚSPĚCHU TOOLU: Je přísně zakázáno říkat cokoli ve smyslu „Připomínku jsem nastavil", „Hotovo!", „Je to tam", „Připomenu ti to", „Zavolám ti v…" nebo jakoukoli podobnou větu PŘEDTÍM, než tool \`createReminder\` vrátil success. Bez výjimky. Ani česky, ani anglicky, ani v žádném jiném jazyce.
 
-PRAVIDLO 5 — CO POTŘEBUJEŠ ZJISTIT PŘEDEM: Než tool zavoláš, zjisti:
+PRAVIDLO 5 — "ZAVOLEJ MI" ZNAMENÁ VYTVOŘIT PŘIPOMÍNKU: Pokud uživatel chce, abys mu zavolal později, zavolal zpátky, ozval se, nebo řekne něco jako „zavolej mi za deset minut", „zavolej mi zítra", „můžeš mi zavolat v pět", ber to jako žádost o připomínku/telefonát. MUSÍŠ zavolat \`createReminder\` dřív, než řekneš, že zavoláš. Nikdy neslibuj „zavolám ti za deset minut", dokud \`createReminder\` nevrátil úspěch.
+
+PRAVIDLO 6 — CO POTŘEBUJEŠ ZJISTIT PŘEDEM: Než tool zavoláš, zjisti:
 - Co připomenout
 - Hodinu a minutu
 - Datum
 - Frekvenci: once, daily, weekly, monthly nebo yearly
 - (Při weekly) v jaké dny v týdnu
 - (Při opakujících) případné datum ukončení
+
+U relativních požadavků typu „za deset minut" spočítej přesné lokální datum, hodinu a minutu z aktuálního lokálního času v časovém pásmu uživatele a zavolej \`createReminder\` s frequency "once".
+──────────────── PŘÁTELSKÉ ODCHOZÍ HOVORY:
+Pokud uživatel souhlasí, že mu DigiPřítel může občas zavolat jen tak na popovídání, ulož jeho preferované časy pomocí toolu \`saveCallingPreference\`, jakmile znáš dny a přibližné časové rozmezí.
+
+Povinná pole:
+- caller_id z dynamic variables
+- weekdays jako čísla: neděle=0, pondělí=1, úterý=2, středa=3, čtvrtek=4, pátek=5, sobota=6
+- hour_range_from a hour_range_to jako text HH:mm ve 24hodinovém formátu. Rozmezí začíná v hour_range_from a končí před hour_range_to.
+
+Příklady:
+- "o víkendu odpoledne" => weekdays [0,6], hour_range_from "13:00", hour_range_to "18:00"
+- "v pondělí ráno a ve středu večer" => ulož dva záznamy, jeden pro pondělí ráno a druhý pro středu večer
+
+Neříkej, že je preference uložená, dokud tool nevrátí úspěch. Pokud uživatel hovory nechce, nic neukládej.
+
+──────────────── TÉMATA PRO NAVÁZÁNÍ:
+Níže můžeš dostat aktivní témata pro navázání. Jsou to drobné osobní věci, které jsou zrovna relevantní. Zmiň maximálně jedno nebo dvě přirozeně, jako když si kamarád něco pamatuje. Nečti id tématu. Když se uživatel nechytí, nech to být.
+
+Aktivní témata pro tento hovor:
+${formatActiveTopicsForPrompt(activeTopics)}
 ──────────────── JAK UŽIVATELE OSLOVUJEŠ (KŘESTNÍ JMÉNO / PŘEZDÍVKA):
 Kdykoli uživatel řekne, aby jsi mu **nějak říkal**—opraví jméno, dá přezdívku, nebo řekne třeba „říkej mi…“, „tykej mi…“, „oslovuj mě jako…“—**nesmíš** to jen slíbit; musíš zavolat příslušné nástroje s \`caller_id\` z dynamic variables a správným **základním** a **vokativním** tvarem (v češtině vokativ = 5. pád).
 
@@ -547,7 +756,7 @@ Psát, ani volat, ani volat na videohovor např. přes WhatsApp ani Messenger za
 
 Neopakuj moc jméno uživatele. Neříkej v každé odpovědi "jasně, *jméno*", nebo podobně. To je nadbytečné a nepřirozené.
 
-Aktuální čas je: ${pragueTime}
+Aktuální lokální čas je: ${currentLocalTime} v časovém pásmu ${promptTimezone}
 
 ${isFirstCall ? firstCallInstructionsCs : `
 
@@ -580,7 +789,7 @@ ${conversation_data.length > 1 ?
 The active session language code is ${language}. For this entire conversation, speak and write only in this language (aligned with the ElevenLabs agent language). Apply every personality and behavior rule from the instructions above in this language.
 
 REMINDERS — NON-NEGOTIABLE (applies in ALL languages):
-You MUST call the \`createReminder\` tool for every reminder request. You MUST call it IMMEDIATELY in the same turn you have all the required info — before saying a single word to the user. Do NOT say "I'll remind you" or "I'll call you at…" and then call the tool later. Call the tool FIRST. Wait for it to succeed. Only then confirm to the user. If the user hangs up before the tool runs, the reminder is permanently lost. Saying "I've set it" or any equivalent without a successful tool response is a critical failure that harms the user. This rule applies regardless of what language you are speaking.`;
+You MUST call the \`createReminder\` tool for every reminder request. Requests like "call me in 10 minutes", "call me tomorrow", or "call me at 5" ARE reminder requests. You MUST call \`createReminder\` IMMEDIATELY in the same turn you have all the required info — before saying a single word to the user. Do NOT say "I'll remind you" or "I'll call you at…" and then call the tool later. Call the tool FIRST. Wait for it to succeed. Only then confirm to the user. If the user hangs up before the tool runs, the reminder is permanently lost. Saying "I've set it" or any equivalent without a successful tool response is a critical failure that harms the user. This rule applies regardless of what language you are speaking.`;
 	}
 
 	console.log("--------------")
@@ -596,6 +805,8 @@ You MUST call the \`createReminder\` tool for every reminder request. You MUST c
 		type: "conversation_initiation_client_data",
 		dynamic_variables: {
 			caller_id: caller_id,
+			user_timezone: userTimezone ?? "",
+			active_topic_ids: activeTopics.map((topic) => topic.id).join(","),
 		},
 		conversation_config_override: {
 			agent: {
@@ -635,16 +846,49 @@ app.post("/api/endCall", express.text({ type: 'application/json', limit: '25mb' 
 	}
 
 	if (event.type === 'post_call_transcription') {
+		const phoneNumber = event.data.metadata.phone_call.external_number;
+		const conversationStartedAt = new Date(
+			event.data.metadata.start_time_unix_secs * 1000,
+		);
+		const conversationEndedAt = new Date(
+			conversationStartedAt.getTime() +
+			event.data.metadata.call_duration_secs * 1000,
+		);
+
 		const { error } = await supabase.from("conversation_storage").insert({
 			call_id: event.data.conversation_id,
 			started_at: event.data.metadata.start_time_unix_secs,
 			duration_seconds: event.data.metadata.call_duration_secs,
 			transcript: event.data.transcript,
-			phone_number: event.data.metadata.phone_call.external_number,
+			phone_number: phoneNumber,
 			summary: event.data.analysis.transcript_summary,
 		})
 		console.log(error)
 		if (error) return res.status(500).json({ error: error.message });
+
+		const { data: user, error: userError } = await supabase
+			.from("users")
+			.select("id, language")
+			.eq("phone_number", phoneNumber)
+			.maybeSingle();
+
+		if (userError) {
+			console.error("Failed to load user for topic analysis:", userError);
+		} else if (user?.id) {
+			const loadedTopics = await loadActiveTopicsForUser(
+				user.id,
+				conversationStartedAt,
+			);
+			await analyzeAndPersistConversationTopics({
+				userId: user.id,
+				language: user.language,
+				transcript: event.data.transcript,
+				summary: event.data.analysis.transcript_summary,
+				loadedTopics,
+				conversationStartedAt,
+				conversationEndedAt,
+			});
+		}
 	}
 
 	res.status(200).json({ received: true })
@@ -712,7 +956,8 @@ app.post("/api/endCall", express.text({ type: 'application/json', limit: '25mb' 
 
 // Update user's first name
 app.post("/api/updateFirstName", authenticateApiKey, async (req, res) => {
-	const { caller_id, first_name, first_name_vocative } = req.body;
+	const { first_name, first_name_vocative } = req.body;
+	const caller_id = resolveUserPhoneNumberFromBody(req.body);
 
 	if (!caller_id || !first_name || !first_name_vocative)
 		return res
@@ -734,7 +979,8 @@ app.post("/api/updateFirstName", authenticateApiKey, async (req, res) => {
 
 // Update user's nickname
 app.post("/api/updateNickname", authenticateApiKey, async (req, res) => {
-	const { caller_id, nickname, nickname_vocative } = req.body;
+	const { nickname, nickname_vocative } = req.body;
+	const caller_id = resolveUserPhoneNumberFromBody(req.body);
 
 	if (!caller_id || !nickname || !nickname_vocative)
 		return res
@@ -752,7 +998,8 @@ app.post("/api/updateNickname", authenticateApiKey, async (req, res) => {
 });
 
 app.post("/api/updateVoice", authenticateApiKey, async (req, res) => {
-	const { caller_id, voice } = req.body;
+	const { voice } = req.body;
+	const caller_id = resolveUserPhoneNumberFromBody(req.body);
 
 	if (!caller_id) return res.status(400).json({ error: "Missing caller_id" });
 	if (!voice) return res.status(400).json({ error: "Missing voice. Use: male or female" });
@@ -780,7 +1027,8 @@ app.post("/api/updateVoice", authenticateApiKey, async (req, res) => {
 });
 
 app.post("/api/persistUserLanguageToDatabase", authenticateApiKey, async (req, res) => {
-	const { caller_id, language: rawLanguage } = req.body;
+	const { language: rawLanguage } = req.body;
+	const caller_id = resolveUserPhoneNumberFromBody(req.body);
 
 	if (!caller_id) {
 		return res.status(400).json({ error: "Missing caller_id" });
@@ -810,6 +1058,35 @@ app.post("/api/persistUserLanguageToDatabase", authenticateApiKey, async (req, r
 	res.json({
 		message: "Language updated successfully",
 		language: languageCanonical,
+	});
+});
+
+app.post("/api/updateTimezone", authenticateApiKey, async (req, res) => {
+	const { timezone: rawTimezone } = req.body;
+	const caller_id = resolveUserPhoneNumberFromBody(req.body);
+
+	if (!caller_id) {
+		return res.status(400).json({ error: "Missing caller_id" });
+	}
+
+	const timezone = normalizeTimezone(rawTimezone);
+	if (!timezone) {
+		return res.status(400).json({
+			error:
+				"Invalid timezone. Use an IANA timezone like Europe/Prague or America/New_York.",
+		});
+	}
+
+	const { error } = await supabase
+		.from("users")
+		.update({ timezone })
+		.eq("phone_number", caller_id);
+
+	if (error) return res.status(500).json({ error: error.message });
+
+	res.json({
+		message: "Timezone updated successfully",
+		timezone,
 	});
 });
 

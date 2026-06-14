@@ -1,24 +1,117 @@
 import { app } from "./app";
+import {
+	getAgentPhoneNumberId,
+	getPhoneNumberToIdMap,
+	resolveCallParticipants,
+	resolveUserPhoneNumberFromBody,
+	resolveUserPhoneNumberFromHeadersOrQuery,
+} from "./lib/callParticipants";
+import { getOrInferUserTimezone } from "./lib/userTimezone";
 import { supabase } from "./lib/supabase";
+import { cronDateNumber, timeZoneParts } from "./lib/timezone";
 import { authenticateApiKey } from "./middleware/auth";
 
-/** Caller id may arrive as header (ElevenLabs) or query fallback on GET */
-function callerIdFromHeadersOrQuery(req: {
-	headers: Record<string, string | string[] | undefined>;
-	query: Record<string, unknown>;
-}): string | undefined {
-	const h = req.headers;
-	const fromHeader = h["caller_id"] ?? h["caller-id"];
-	if (typeof fromHeader === "string" && fromHeader.trim()) {
-		return fromHeader.trim();
+type ConversationInitiationData = {
+	type?: string;
+	dynamic_variables?: Record<string, unknown>;
+	conversation_config_override?: {
+		agent?: {
+			first_message?: string;
+			language?: string;
+			prompt?: {
+				prompt?: string;
+			};
+		};
+		tts?: {
+			voice_id?: string;
+		};
+		[key: string]: unknown;
+	};
+};
+
+function localDateParts(
+	value: string,
+	timezone: string,
+): { year: number; month: number; day: number; weekday: number } {
+	const dateOnly = value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+	if (dateOnly) {
+		const year = Number(dateOnly[1]);
+		const month = Number(dateOnly[2]);
+		const day = Number(dateOnly[3]);
+		const weekday = new Date(Date.UTC(year, month - 1, day)).getUTCDay();
+		return { year, month, day, weekday };
 	}
-	if (Array.isArray(fromHeader) && typeof fromHeader[0] === "string") {
-		const v = fromHeader[0].trim();
-		if (v) return v;
+
+	const parts = timeZoneParts(new Date(value), timezone);
+	return {
+		year: parts.year,
+		month: parts.month,
+		day: parts.day,
+		weekday: parts.weekday,
+	};
+}
+
+function endOfLocalDateCronNumber(value: string, timezone: string): number {
+	const parts = localDateParts(value, timezone);
+	return cronDateNumber({
+		...parts,
+		hour: 23,
+		minute: 59,
+		second: 59,
+	});
+}
+
+function getApiUrl(): string {
+	return process.env.API_URL || "https://api-nameless-water-1932.fly.dev";
+}
+
+async function getReminderConversationInitiationData(params: {
+	callerId: string;
+	reminderText: string;
+}): Promise<ConversationInitiationData> {
+	const response = await fetch(`${getApiUrl()}/api/initCall`, {
+		method: "POST",
+		headers: {
+			Authorization: `Bearer ${process.env.API_KEY}`,
+			"Content-Type": "application/json",
+		},
+		body: JSON.stringify({ caller_id: params.callerId }),
+	});
+
+	console.log("--------------------------------")
+	console.log("caller_id: ", params.callerId);
+	console.log("--------------------------------")
+
+	if (!response.ok) {
+		throw new Error(`initCall failed for reminder call: ${await response.text()}`);
 	}
-	const q = req.query.caller_id;
-	if (typeof q === "string" && q.trim()) return q.trim();
-	return undefined;
+
+	const data = (await response.json()) as ConversationInitiationData;
+	data.dynamic_variables = {
+		...(data.dynamic_variables ?? {}),
+		caller_id: params.callerId,
+		reason: params.reminderText,
+		outbound_call: "true",
+		reminder_call: "true",
+	};
+	data.conversation_config_override ??= {};
+	data.conversation_config_override.agent ??= {};
+	data.conversation_config_override.agent.first_message = params.reminderText;
+
+	const language = data.conversation_config_override.agent.language;
+	const reminderInstruction =
+		language === "cs"
+			? `\n\n──────────────── ODCHOZÍ PŘIPOMÍNKA:\nTentokrát voláš uživateli ty kvůli připomínce. Tvá první a hlavní povinnost je jasně předat tuto připomínku: "${params.reminderText}"\nUjisti se, že ji uživatel slyšel nebo pochopil. Pokud jen poděkuje nebo potvrdí, můžeš hovor krátce a mile ukončit. Pokud ale chce pokračovat v rozhovoru, pokračuj normálně jako DigiPřítel se všemi pravidly, pamětí, nástroji a stylem z hlavního promptu.`
+			: `\n\n──────────────── OUTBOUND REMINDER CALL:\nThis time you called the user because of a reminder. Your first and primary job is to clearly deliver this reminder: "${params.reminderText}"\nMake sure the user heard or understood it. If they simply thank you or confirm, you may end the call briefly and warmly. If they want to keep talking, continue normally as MyFriend with all the rules, memory, tools, and style from the main prompt.`;
+
+	const prompt = data.conversation_config_override.agent.prompt?.prompt;
+	if (prompt) {
+		data.conversation_config_override.agent.prompt = {
+			prompt: `${prompt}${reminderInstruction}`,
+		};
+	}
+
+	return data;
 }
 
 // This is what the cron job runs to make the agent call you
@@ -62,8 +155,22 @@ app.get("/api/webhook/reminder", authenticateApiKey, async (req, res) => {
 				.eq("id", id);
 		}
 
-		const phoneMap = JSON.parse(process.env.PHONE_NUMBER_TO_ID_MAP || "{}");
-		const agent_phone_number_id = phoneMap[reminder.agent_phone_number];
+		const phoneMap = getPhoneNumberToIdMap();
+		const agent_phone_number_id = getAgentPhoneNumberId(reminder.agent_phone_number);
+		if (!agent_phone_number_id) {
+			console.error("Missing agent phone number id for reminder:", {
+				agent_phone_number: reminder.agent_phone_number,
+				phone_map_keys: Object.keys(phoneMap),
+			});
+			return res.status(500).json({
+				error: "Reminder agent_phone_number is not in PHONE_NUMBER_TO_ID_MAP",
+			});
+		}
+		const conversationInitiationClientData =
+			await getReminderConversationInitiationData({
+				callerId: reminder.phone_number,
+				reminderText: reminder.text,
+			});
 
 		// Make the call
 		const response = await fetch(
@@ -78,20 +185,7 @@ app.get("/api/webhook/reminder", authenticateApiKey, async (req, res) => {
 					agent_id: reminder.agent_id,
 					agent_phone_number_id: agent_phone_number_id,
 					to_number: reminder.phone_number,
-					conversation_initiation_client_data: {
-						dynamic_variables: {
-							reason: reminder.text,
-						},
-						conversation_config_override: {
-							agent: {
-								first_message: reminder.text,
-								prompt: {
-									prompt:
-										"You are calling to deliver one short reminder message, confirm the user heard it, then politely end the call. Speak in Czech.",
-								},
-							},
-						},
-					},
+					conversation_initiation_client_data: conversationInitiationClientData,
 				}),
 			},
 		);
@@ -126,11 +220,28 @@ app.post("/api/createReminder", authenticateApiKey, async (req, res) => {
 		weekdays,
 		agent_id,
 		agent_phone_number,
+		system_caller_id,
+		system_called_number,
 	} = req.body;
 
+	const participants = resolveCallParticipants({
+		callerId: caller_id,
+		agentPhoneNumber: agent_phone_number,
+		systemCallerId: system_caller_id,
+		systemCalledNumber: system_called_number,
+	});
+	const userPhoneNumber = participants.userPhoneNumber;
+	const resolvedAgentPhoneNumber = participants.agentPhoneNumber;
+
 	// Validate required fields with detailed error messages
-	if (!caller_id) {
+	if (!userPhoneNumber) {
 		return res.status(400).json({ error: "Missing caller_id" });
+	}
+	if (!resolvedAgentPhoneNumber) {
+		return res.status(400).json({
+			error:
+				"Could not determine agent phone number. Send system_caller_id and system_called_number, and make sure PHONE_NUMBER_TO_ID_MAP contains the agent number.",
+		});
 	}
 	if (!reminder_text) {
 		return res.status(400).json({ error: "Missing reminder_text" });
@@ -148,6 +259,31 @@ app.post("/api/createReminder", authenticateApiKey, async (req, res) => {
 		return res.status(400).json({ error: "Missing frequency" });
 	}
 
+	console.log("--------------------------------")
+	console.log("create reminder caller_id: ", userPhoneNumber);
+	console.log("create reminder agent_phone_number: ", resolvedAgentPhoneNumber);
+	console.log("--------------------------------")
+
+	const { data: user, error: userError } = await supabase
+		.from("users")
+		.select("timezone")
+		.eq("phone_number", userPhoneNumber)
+		.maybeSingle();
+
+	if (userError) return res.status(500).json({ error: userError.message });
+
+	const timezoneResult = await getOrInferUserTimezone({
+		callerId: userPhoneNumber,
+		currentTimezone: user?.timezone,
+	});
+	if (!timezoneResult.ok) {
+		return res.status(timezoneResult.status).json({
+			error: timezoneResult.error,
+			inference_reason: timezoneResult.inference_reason,
+		});
+	}
+	const timezone = timezoneResult.timezone;
+
 	// Parse weekdays if it came as a string from ElevenLabs
 	let parsedWeekdays: number[] | null = null;
 	if (weekdays) {
@@ -163,33 +299,18 @@ app.post("/api/createReminder", authenticateApiKey, async (req, res) => {
 	}
 
 	// Build schedule based on frequency
-	const reminderDate = new Date(date);
-
-	// Format expiresAt as YYYYMMDDhhmmss (cron-job.org format)
-	const formatExpiresAt = (date: Date): number => {
-		if (!date || date.getTime() <= 0) return 0;
-		const d = new Date(date);
-		d.setHours(23, 59, 59, 999); // End of day
-		const year = d.getFullYear();
-		const month = String(d.getMonth() + 1).padStart(2, "0");
-		const day = String(d.getDate()).padStart(2, "0");
-		const hour = String(d.getHours()).padStart(2, "0");
-		const minute = String(d.getMinutes()).padStart(2, "0");
-		const second = String(d.getSeconds()).padStart(2, "0");
-		return parseInt(`${year}${month}${day}${hour}${minute}${second}`);
-	};
+	const reminderDate = localDateParts(date, timezone);
 
 	// For "once": no expiration needed
 	// For recurring with end_date: use end_date
 	// For recurring without end_date: no expiration (runs indefinitely)
 	let expiresAt = 0;
 	if (frequency !== "once" && end_date) {
-		const endDate = new Date(end_date);
-		expiresAt = formatExpiresAt(endDate);
+		expiresAt = endOfLocalDateCronNumber(end_date, timezone);
 	}
 
 	const base = {
-		timezone: "Europe/Prague",
+		timezone,
 		hours: [parseInt(time_hour)],
 		minutes: [parseInt(time_minute)],
 	};
@@ -197,8 +318,8 @@ app.post("/api/createReminder", authenticateApiKey, async (req, res) => {
 	const schedules = {
 		once: {
 			...base,
-			mdays: [reminderDate.getDate()],
-			months: [reminderDate.getMonth() + 1],
+			mdays: [reminderDate.day],
+			months: [reminderDate.month],
 			wdays: [-1],
 		},
 		daily: { ...base, expiresAt, mdays: [-1], months: [-1], wdays: [-1] },
@@ -207,20 +328,20 @@ app.post("/api/createReminder", authenticateApiKey, async (req, res) => {
 			expiresAt,
 			mdays: [-1],
 			months: [-1],
-			wdays: parsedWeekdays || [reminderDate.getDay()],
+			wdays: parsedWeekdays || [reminderDate.weekday],
 		},
 		monthly: {
 			...base,
 			expiresAt,
-			mdays: [reminderDate.getDate()],
+			mdays: [reminderDate.day],
 			months: [-1],
 			wdays: [-1],
 		},
 		yearly: {
 			...base,
 			expiresAt,
-			mdays: [reminderDate.getDate()],
-			months: [reminderDate.getMonth() + 1],
+			mdays: [reminderDate.day],
+			months: [reminderDate.month],
 			wdays: [-1],
 		},
 	};
@@ -237,7 +358,7 @@ app.post("/api/createReminder", authenticateApiKey, async (req, res) => {
 		const { data: newReminder, error: insertError } = await supabase
 			.from("reminders")
 			.insert({
-				phone_number: caller_id,
+				phone_number: userPhoneNumber,
 				text: reminder_text,
 				time_hour: time_hour,
 				time_minute: time_minute,
@@ -246,7 +367,7 @@ app.post("/api/createReminder", authenticateApiKey, async (req, res) => {
 				frequency: frequency,
 				weekdays: parsedWeekdays ? parsedWeekdays.join(",") : null,
 				agent_id: agent_id,
-				agent_phone_number: agent_phone_number,
+				agent_phone_number: resolvedAgentPhoneNumber,
 				active: true,
 			})
 			.select()
@@ -271,7 +392,7 @@ app.post("/api/createReminder", authenticateApiKey, async (req, res) => {
 			body: JSON.stringify({
 				job: {
 					enabled: true,
-					title: `Reminder for ${caller_id}: ${reminder_text}`,
+					title: `Reminder for ${userPhoneNumber}: ${reminder_text}`,
 					saveResponses: true,
 					url: `${apiUrl}/api/webhook/reminder?id=${newReminder.id}`,
 					requestMethod: 0, // GET
@@ -315,7 +436,7 @@ app.post("/api/createReminder", authenticateApiKey, async (req, res) => {
 
 // List reminders
 app.get("/api/listReminders", authenticateApiKey, async (req, res) => {
-	const caller_id = callerIdFromHeadersOrQuery(req);
+	const caller_id = resolveUserPhoneNumberFromHeadersOrQuery(req);
 
 	if (!caller_id) {
 		return res.status(400).json({ error: "Missing caller_id" });
@@ -356,6 +477,8 @@ app.patch("/api/updateReminder", authenticateApiKey, async (req, res) => {
 		weekdays,
 	} = req.body;
 
+	caller_id = resolveUserPhoneNumberFromBody(req.body);
+
 	if (!caller_id) {
 		return res.status(400).json({ error: "Missing caller_id" });
 	}
@@ -363,6 +486,7 @@ app.patch("/api/updateReminder", authenticateApiKey, async (req, res) => {
 		return res.status(400).json({ error: "Missing cron_job_id" });
 	}
 
+	let timezone = "";
 	try {
 		const { data: reminder, error: dbError } = await supabase
 			.from("reminders")
@@ -384,6 +508,29 @@ app.patch("/api/updateReminder", authenticateApiKey, async (req, res) => {
 		if (!frequency) frequency = reminder.frequency;
 		if (!end_date) end_date = reminder.end_date;
 		if (!weekdays) weekdays = reminder.weekdays;
+
+		const { data: user, error: userError } = await supabase
+			.from("users")
+			.select("timezone")
+			.eq("phone_number", caller_id)
+			.maybeSingle();
+
+		if (userError) {
+			console.error("User timezone error:", userError);
+			return res.status(500).json({ error: userError.message });
+		}
+
+		const timezoneResult = await getOrInferUserTimezone({
+			callerId: caller_id,
+			currentTimezone: user?.timezone,
+		});
+		if (!timezoneResult.ok) {
+			return res.status(timezoneResult.status).json({
+				error: timezoneResult.error,
+				inference_reason: timezoneResult.inference_reason,
+			});
+		}
+		timezone = timezoneResult.timezone;
 	} catch (error) {
 		console.error("Error fetching reminder:", error);
 		return res.status(500).json({ error: "Internal server error" });
@@ -404,33 +551,18 @@ app.patch("/api/updateReminder", authenticateApiKey, async (req, res) => {
 	}
 
 	// Build schedule based on frequency
-	const reminderDate = new Date(date);
-
-	// Format expiresAt as YYYYMMDDhhmmss (cron-job.org format)
-	const formatExpiresAt = (date: Date): number => {
-		if (!date || date.getTime() <= 0) return 0;
-		const d = new Date(date);
-		d.setHours(23, 59, 59, 999); // End of day
-		const year = d.getFullYear();
-		const month = String(d.getMonth() + 1).padStart(2, "0");
-		const day = String(d.getDate()).padStart(2, "0");
-		const hour = String(d.getHours()).padStart(2, "0");
-		const minute = String(d.getMinutes()).padStart(2, "0");
-		const second = String(d.getSeconds()).padStart(2, "0");
-		return parseInt(`${year}${month}${day}${hour}${minute}${second}`);
-	};
+	const reminderDate = localDateParts(date, timezone);
 
 	// For "once": no expiration needed
 	// For recurring with end_date: use end_date
 	// For recurring without end_date: no expiration (runs indefinitely)
 	let expiresAt = 0;
 	if (frequency !== "once" && end_date) {
-		const endDate = new Date(end_date);
-		expiresAt = formatExpiresAt(endDate);
+		expiresAt = endOfLocalDateCronNumber(end_date, timezone);
 	}
 
 	const base = {
-		timezone: "Europe/Prague",
+		timezone,
 		hours: [parseInt(time_hour)],
 		minutes: [parseInt(time_minute)],
 	};
@@ -438,8 +570,8 @@ app.patch("/api/updateReminder", authenticateApiKey, async (req, res) => {
 	const schedules = {
 		once: {
 			...base,
-			mdays: [reminderDate.getDate()],
-			months: [reminderDate.getMonth() + 1],
+			mdays: [reminderDate.day],
+			months: [reminderDate.month],
 			wdays: [-1],
 		},
 		daily: { ...base, expiresAt, mdays: [-1], months: [-1], wdays: [-1] },
@@ -448,20 +580,20 @@ app.patch("/api/updateReminder", authenticateApiKey, async (req, res) => {
 			expiresAt,
 			mdays: [-1],
 			months: [-1],
-			wdays: parsedWeekdays || [reminderDate.getDay()],
+			wdays: parsedWeekdays || [reminderDate.weekday],
 		},
 		monthly: {
 			...base,
 			expiresAt,
-			mdays: [reminderDate.getDate()],
+			mdays: [reminderDate.day],
 			months: [-1],
 			wdays: [-1],
 		},
 		yearly: {
 			...base,
 			expiresAt,
-			mdays: [reminderDate.getDate()],
-			months: [reminderDate.getMonth() + 1],
+			mdays: [reminderDate.day],
+			months: [reminderDate.month],
 			wdays: [-1],
 		},
 	};
@@ -539,13 +671,11 @@ app.patch("/api/updateReminder", authenticateApiKey, async (req, res) => {
 
 // Delete a reminder
 app.delete("/api/deleteReminder", authenticateApiKey, async (req, res) => {
-	const {
-		caller_id,
-		cron_job_id
-	} = req.query;
+	const { cron_job_id } = req.query;
+	const userPhoneNumber = resolveUserPhoneNumberFromHeadersOrQuery(req);
 
 	// Validate required fields with detailed error messages
-	if (!caller_id) {
+	if (!userPhoneNumber) {
 		return res.status(400).json({ error: "Missing caller_id" });
 	}
 	if (!cron_job_id) {
@@ -558,7 +688,7 @@ app.delete("/api/deleteReminder", authenticateApiKey, async (req, res) => {
 			.from("reminders")
 			.delete()
 			.eq("cron_job_id", cron_job_id)
-			.eq("phone_number", caller_id);
+			.eq("phone_number", userPhoneNumber);
 
 		if (deleteError) {
 			console.error("Database error:", deleteError);

@@ -68,6 +68,7 @@ Express.js API server for MyFriend - a companion application for elderly users.
      nickname VARCHAR(100),
      nickname_vocative VARCHAR(100),
      phone_number VARCHAR(20),
+     timezone VARCHAR(100),
      created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
      updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
    );
@@ -92,6 +93,75 @@ Express.js API server for MyFriend - a companion application for elderly users.
    CREATE INDEX idx_reminders_phone_number ON reminders(phone_number);
    CREATE INDEX idx_reminders_cron_job_id ON reminders(cron_job_id);
    ```
+
+   Friendly outbound calls and follow-up topics need the extra tables in
+   `supabase-calling-topics.sql`.
+
+   ```sql
+   CREATE TABLE IF NOT EXISTS calling_preferences (
+     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+     user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+     weekdays VARCHAR(50) NOT NULL,
+     hour_range_from VARCHAR(5) NOT NULL CHECK (hour_range_from ~ '^([01][0-9]|2[0-3]):[0-5][0-9]$'),
+     hour_range_to VARCHAR(5) NOT NULL CHECK (hour_range_to ~ '^([01][0-9]|2[0-3]):[0-5][0-9]$'),
+     agent_id VARCHAR(255),
+     agent_phone_number VARCHAR(50),
+     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+     CHECK (hour_range_from < hour_range_to)
+   );
+
+   CREATE TABLE IF NOT EXISTS topics (
+     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+     user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+     time_from TIMESTAMPTZ NOT NULL,
+     time_to TIMESTAMPTZ NOT NULL,
+     topic TEXT NOT NULL,
+     active BOOLEAN NOT NULL DEFAULT TRUE,
+     CHECK (time_from < time_to)
+   );
+   ```
+
+   Add a daily cron-job.org job that calls:
+
+   ```text
+   GET /api/webhook/generate-calling-jobs
+   Authorization: Bearer YOUR_API_KEY
+   ```
+
+   Or create that daily generator job through the API:
+
+   ```text
+   POST /api/createCallingJobGeneratorCron
+   { "time_hour": 0, "time_minute": 5 }
+   ```
+
+   That endpoint creates one-off cron jobs for each matching calling preference.
+   Topic extraction in `/api/endCall` uses `OPENAI_API_KEY` and optional
+   `OPENAI_TOPIC_MODEL`; outbound friendly calls can use
+   `ELEVENLABS_AGENT_ID` / `AGENT_PHONE_NUMBER` as fallbacks when a preference
+   does not store agent details.
+
+   Reminders and friendly calling preferences use `users.timezone` for local
+   scheduling. The server infers it from phone prefix only when the prefix maps
+   clearly to one timezone. If the prefix covers multiple zones, such as `+1`,
+   the agent should ask the user and then call `/api/updateTimezone`.
+
+   Enable Row Level Security with `supabase-rls.sql`:
+
+   ```sql
+   ALTER TABLE IF EXISTS users ENABLE ROW LEVEL SECURITY;
+   ALTER TABLE IF EXISTS reminders ENABLE ROW LEVEL SECURITY;
+   ALTER TABLE IF EXISTS facts ENABLE ROW LEVEL SECURITY;
+   ALTER TABLE IF EXISTS conversation_storage ENABLE ROW LEVEL SECURITY;
+   ALTER TABLE IF EXISTS calling_preferences ENABLE ROW LEVEL SECURITY;
+   ALTER TABLE IF EXISTS topics ENABLE ROW LEVEL SECURITY;
+   ```
+
+   No anon/authenticated policies are added intentionally. This API uses the
+   Supabase service role key on the backend, which bypasses RLS, while direct
+   browser/client access stays denied by default.
 
 ### Development
 
