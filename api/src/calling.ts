@@ -7,6 +7,12 @@ import {
 import { getOrInferUserTimezone } from "./lib/userTimezone";
 import { supabase } from "./lib/supabase";
 import { cronDateNumber, timeZoneParts } from "./lib/timezone";
+import {
+	CRON_JOB_ORG_CREATE_DELAY_MS,
+	createCronJobOrgJob,
+	friendlyCallJobTitle,
+	sleepMs,
+} from "./lib/cronJobOrg";
 import { authenticateApiKey } from "./middleware/auth";
 import { loadActiveTopicsForUser } from "./topics";
 
@@ -390,45 +396,35 @@ app.post("/api/createCallingJobGeneratorCron", authenticateApiKey, async (req, r
 	}
 
 	const apiUrl = getApiUrl();
-	const cronJobResponse = await fetch("https://api.cron-job.org/jobs", {
-		method: "PUT",
-		headers: {
-			Authorization: `Bearer ${process.env.CRONJOB_API_KEY}`,
-			"Content-Type": "application/json",
-		},
-		body: JSON.stringify({
-			job: {
-				enabled: true,
-				title: "Generate friendly call jobs",
-				saveResponses: true,
-				url: `${apiUrl}/api/webhook/generate-calling-jobs`,
-				requestMethod: 0,
-				extendedData: {
-					headers: {
-						Authorization: `Bearer ${process.env.API_KEY}`,
-					},
-				},
-				schedule: {
-					timezone: "UTC",
-					hours: [hour],
-					minutes: [minute],
-					mdays: [-1],
-					months: [-1],
-					wdays: [-1],
-				},
+	const cronJobResult = await createCronJobOrgJob({
+		enabled: true,
+		title: "Generate friendly call jobs",
+		saveResponses: true,
+		url: `${apiUrl}/api/webhook/generate-calling-jobs`,
+		requestMethod: 0,
+		extendedData: {
+			headers: {
+				Authorization: `Bearer ${process.env.API_KEY}`,
 			},
-		}),
+		},
+		schedule: {
+			timezone: "UTC",
+			hours: [hour],
+			minutes: [minute],
+			mdays: [-1],
+			months: [-1],
+			wdays: [-1],
+		},
 	});
 
-	if (!cronJobResponse.ok) {
-		console.error("Cron-job.org generator setup error:", await cronJobResponse.text());
+	if (!cronJobResult.ok) {
+		console.error("Cron-job.org generator setup error:", cronJobResult.error);
 		return res.status(500).json({ error: "Failed to create generator cron job" });
 	}
 
-	const cronJobData = (await cronJobResponse.json()) as { jobId?: string };
 	res.json({
 		message: "Calling job generator cron created successfully",
-		cron_job_id: cronJobData.jobId,
+		cron_job_id: cronJobResult.jobId,
 	});
 });
 
@@ -465,6 +461,7 @@ app.get("/api/webhook/generate-calling-jobs", authenticateApiKey, async (_req, r
 		cron_job_id?: string;
 		skipped?: string;
 	}> = [];
+	let cronJobsCreated = 0;
 
 	for (const preference of allPreferences) {
 		const user = userById.get(preference.user_id);
@@ -522,62 +519,68 @@ app.get("/api/webhook/generate-calling-jobs", authenticateApiKey, async (_req, r
 			continue;
 		}
 
-		const cronJobResponse = await fetch("https://api.cron-job.org/jobs", {
-			method: "PUT",
-			headers: {
-				Authorization: `Bearer ${process.env.CRONJOB_API_KEY}`,
-				"Content-Type": "application/json",
-			},
-			body: JSON.stringify({
-				job: {
-					enabled: true,
-					title: `Friendly call for ${user.phone_number}`,
-					saveResponses: true,
-					url: `${apiUrl}/api/webhook/call-user?preference_id=${preference.id}`,
-					requestMethod: 0,
-					extendedData: {
-						headers: {
-							Authorization: `Bearer ${process.env.API_KEY}`,
-						},
-					},
-					schedule: {
-						timezone,
-						hours: [selected.hour],
-						minutes: [selected.minute],
-						mdays: [scheduleDay.day],
-						months: [scheduleDay.month],
-						wdays: [-1],
-						expiresAt: cronDateNumber({
-							...scheduleDay,
-							hour: 23,
-							minute: 59,
-							second: 59,
-						}),
-					},
-				},
+		if (cronJobsCreated > 0) {
+			await sleepMs(CRON_JOB_ORG_CREATE_DELAY_MS);
+		}
+
+		const cronJobResult = await createCronJobOrgJob({
+			enabled: true,
+			title: friendlyCallJobTitle({
+				phoneNumber: user.phone_number,
+				year: scheduleDay.year,
+				month: scheduleDay.month,
+				day: scheduleDay.day,
+				hour: selected.hour,
+				minute: selected.minute,
 			}),
+			saveResponses: true,
+			url: `${apiUrl}/api/webhook/call-user?preference_id=${preference.id}`,
+			requestMethod: 0,
+			extendedData: {
+				headers: {
+					Authorization: `Bearer ${process.env.API_KEY}`,
+				},
+			},
+			schedule: {
+				timezone,
+				hours: [selected.hour],
+				minutes: [selected.minute],
+				mdays: [scheduleDay.day],
+				months: [scheduleDay.month],
+				wdays: [-1],
+				expiresAt: cronDateNumber({
+					...scheduleDay,
+					hour: 23,
+					minute: 59,
+					second: 59,
+				}),
+			},
 		});
 
-		if (!cronJobResponse.ok) {
+		if (!cronJobResult.ok) {
+			console.error(
+				`Failed to create friendly call cron for ${user.phone_number}:`,
+				cronJobResult.error,
+			);
 			jobs.push({
 				preference_id: preference.id,
 				user_id: preference.user_id,
 				phone_number: user.phone_number,
 				hour: selected.hour,
 				minute: selected.minute,
-				skipped: await cronJobResponse.text(),
+				skipped: cronJobResult.error,
 			});
 			continue;
 		}
 
-		const cronJobData = (await cronJobResponse.json()) as { jobId?: string };
+		cronJobsCreated++;
 		jobs.push({
 			preference_id: preference.id,
 			user_id: preference.user_id,
 			phone_number: user.phone_number,
 			hour: selected.hour,
 			minute: selected.minute,
-			cron_job_id: cronJobData.jobId,
+			cron_job_id: String(cronJobResult.jobId),
 		});
 	}
 
