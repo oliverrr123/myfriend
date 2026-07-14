@@ -20,6 +20,8 @@ This repo is basically just for the memory management and tools.
 
 ## State of the project:
 
-Right now I'm trying to test it with as many users as possible to get as much feedback possible, so I can iterate on making the product better and better.
+Right now I'm testing it with as many users as possible to get as much feedback possible, so I can iterate on making the product better and better.
 
-If you wanna test it / know someone who would like to test it, pls message me at oliver.cingl@gmail.com thx so much 🙏
+Right now I have ~200 users.
+
+If you wanna test it / know someone who would like to test it, you can call myfriend right now for free using the phone numbers here: https://growbyte.co/myfriend/try

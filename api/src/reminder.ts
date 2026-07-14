@@ -218,6 +218,7 @@ app.post("/api/createReminder", authenticateApiKey, async (req, res) => {
 		end_date,
 		frequency,
 		weekdays,
+		minutes_from_now,
 		agent_id,
 		agent_phone_number,
 		system_caller_id,
@@ -246,17 +247,36 @@ app.post("/api/createReminder", authenticateApiKey, async (req, res) => {
 	if (!reminder_text) {
 		return res.status(400).json({ error: "Missing reminder_text" });
 	}
-	if (time_hour === undefined || time_hour === null) {
-		return res.status(400).json({ error: "Missing time_hour" });
-	}
-	if (time_minute === undefined || time_minute === null) {
-		return res.status(400).json({ error: "Missing time_minute" });
-	}
-	if (!date) {
-		return res.status(400).json({ error: "Missing date" });
-	}
 	if (!frequency) {
 		return res.status(400).json({ error: "Missing frequency" });
+	}
+
+	const minutesFromNow =
+		minutes_from_now !== undefined && minutes_from_now !== null
+			? Number(minutes_from_now)
+			: null;
+
+	if (minutesFromNow !== null) {
+		if (!Number.isFinite(minutesFromNow) || minutesFromNow < 1) {
+			return res.status(400).json({
+				error: "minutes_from_now must be a positive number",
+			});
+		}
+		if (frequency !== "once") {
+			return res.status(400).json({
+				error: "minutes_from_now is only supported for frequency 'once'",
+			});
+		}
+	} else {
+		if (time_hour === undefined || time_hour === null) {
+			return res.status(400).json({ error: "Missing time_hour" });
+		}
+		if (time_minute === undefined || time_minute === null) {
+			return res.status(400).json({ error: "Missing time_minute" });
+		}
+		if (!date) {
+			return res.status(400).json({ error: "Missing date" });
+		}
 	}
 
 	console.log("--------------------------------")
@@ -283,6 +303,18 @@ app.post("/api/createReminder", authenticateApiKey, async (req, res) => {
 	}
 	const timezone = timezoneResult.timezone;
 
+	let resolvedTimeHour = time_hour;
+	let resolvedTimeMinute = time_minute;
+	let resolvedDate = date;
+
+	if (minutesFromNow !== null) {
+		const target = new Date(Date.now() + minutesFromNow * 60 * 1000);
+		const parts = timeZoneParts(target, timezone);
+		resolvedTimeHour = parts.hour;
+		resolvedTimeMinute = parts.minute;
+		resolvedDate = `${parts.year}-${String(parts.month).padStart(2, "0")}-${String(parts.day).padStart(2, "0")}`;
+	}
+
 	// Parse weekdays if it came as a string from ElevenLabs
 	let parsedWeekdays: number[] | null = null;
 	if (weekdays) {
@@ -298,7 +330,7 @@ app.post("/api/createReminder", authenticateApiKey, async (req, res) => {
 	}
 
 	// Build schedule based on frequency
-	const reminderDate = localDateParts(date, timezone);
+	const reminderDate = localDateParts(resolvedDate, timezone);
 
 	// For "once": no expiration needed
 	// For recurring with end_date: use end_date
@@ -310,8 +342,8 @@ app.post("/api/createReminder", authenticateApiKey, async (req, res) => {
 
 	const base = {
 		timezone,
-		hours: [parseInt(time_hour)],
-		minutes: [parseInt(time_minute)],
+		hours: [parseInt(String(resolvedTimeHour))],
+		minutes: [parseInt(String(resolvedTimeMinute))],
 	};
 
 	const schedules = {
@@ -359,9 +391,9 @@ app.post("/api/createReminder", authenticateApiKey, async (req, res) => {
 			.insert({
 				phone_number: userPhoneNumber,
 				text: reminder_text,
-				time_hour: time_hour,
-				time_minute: time_minute,
-				date: date,
+				time_hour: resolvedTimeHour,
+				time_minute: resolvedTimeMinute,
+				date: resolvedDate,
 				end_date: end_date || null,
 				frequency: frequency,
 				weekdays: parsedWeekdays ? parsedWeekdays.join(",") : null,

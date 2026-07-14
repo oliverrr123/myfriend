@@ -1,0 +1,40 @@
+{
+  "type": "webhook",
+  "name": "getWeather",
+  "description": "Get current weather for the user or a named place. Call this before answering any weather, temperature, rain, or umbrella question. Never guess weather numbers. If the user names a place, pass location. If they ask generally, omit location to use their saved city or timezone. Read the summary field from the response aloud.",
+  "response_timeout_secs": 15,
+  "disable_interruptions": false,
+  "interruption_mode": "allow",
+  "force_pre_tool_speech": false,
+  "pre_tool_speech": "auto",
+  "execution_mode": "immediate",
+  "api_schema": {
+    "request_headers": {
+      "Authorization": {
+        "secret_id": "USE_WORKSPACE_BEARER_SECRET"
+      }
+    },
+    "url": "https://api-nameless-water-1932.fly.dev/api/getWeather",
+    "method": "POST",
+    "content_type": "application/json",
+    "request_body_schema": {
+      "type": "object",
+      "required": ["caller_id"],
+      "description": "Fetch weather for the current user or a named city/town.",
+      "properties": {
+        "caller_id": {
+          "type": "string",
+          "dynamic_variable": "system__caller_id"
+        },
+        "location": {
+          "type": "string",
+          "description": "Optional city or place when the user asks about weather somewhere specific, for example Prague, Brno, Miami, or Tokyo. Omit when they ask about local weather without naming a place."
+        },
+        "agent_phone_number": {
+          "type": "string",
+          "dynamic_variable": "system__called_number"
+        }
+      }
+    }
+  }
+}

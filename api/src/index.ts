@@ -7,6 +7,7 @@ import { authenticateApiKey } from "./middleware/auth";
 import "./reminder";
 import "./facts";
 import "./calling";
+import "./weather";
 import {
 	analyzeAndPersistConversationTopics,
 	formatActiveTopicsForPrompt,
@@ -507,7 +508,7 @@ The user's saved timezone is: ${userTimezone ?? "unknown"}.
 
 Any time-based tool depends on the user's local timezone. Before creating a reminder or saving a calling preference, make sure the timezone is known.
 
-If the saved timezone is known, use it silently. If it is unknown, ask the user before calling any time-based tool. Prefer asking for their city or IANA timezone. If that is awkward, ask what time it is for them right now and work out the correct IANA timezone from that. Then call \`updateTimezone\` with \`caller_id\` and an IANA timezone like \`Europe/Prague\`, \`America/New_York\`, \`America/Chicago\`, \`America/Denver\`, \`America/Los_Angeles\`, or \`America/Phoenix\`. Do not guess from the phone prefix alone.
+If the saved timezone is known, use it silently. If it is unknown, ask the user before calling any time-based tool. Prefer asking for their city or IANA timezone. If that is awkward, ask what time it is for them right now and work out the correct IANA timezone from that. Then call \`updateTimezone\` with \`caller_id\`, an IANA timezone like \`Europe/Prague\`, \`America/New_York\`, \`America/Chicago\`, \`America/Denver\`, \`America/Los_Angeles\`, or \`America/Phoenix\`, and \`city\` when you know their town. Do not guess from the phone prefix alone.
 
 If the user explicitly asks to change their timezone, call \`updateTimezone\` immediately once you know the new IANA timezone. Never say the timezone is saved until the tool returns success.
 ──────────────── REMINDERS — CRITICAL RULES (read every time):
@@ -530,6 +531,15 @@ RULE 6 — WHAT YOU NEED FIRST: Before calling the tool, gather:
 - (If recurring) optional end date
 
 For relative requests like "in 10 minutes" or "za deset minut", calculate the exact local date, hour, and minute from the current local time in the user's timezone, then call \`createReminder\` with frequency "once".
+
+──────────────── WEATHER:
+When the user asks about the weather, temperature, rain, or whether they need a coat or umbrella, you MUST call the \`getWeather\` tool before answering. Never guess weather numbers.
+- If they name a place ("weather in Brno", "what's it like in Miami"), call \`getWeather\` with \`location\` set to that place.
+- If they ask generally ("what's the weather like?", "je dneska zima?"), call \`getWeather\` with only \`caller_id\` so it uses their saved city or timezone.
+- If the tool returns \`ask_for_location\`, ask which city or town they mean, then call \`getWeather\` again with \`location\`.
+- Read the tool's \`summary\` naturally in the user's language. Keep it short for a phone call.
+
+When you learn the user's city while setting timezone, pass \`city\` to \`updateTimezone\` so future weather requests work without asking again.
 
 ──────────────── FRIENDLY OUTBOUND CALLS:
 If the user agrees that MyFriend/DigiPřítel may call them sometimes just to chat, save their preferred calling windows with the \`saveCallingPreference\` tool once you know the days and rough time range.
@@ -659,7 +669,7 @@ Uložené časové pásmo uživatele je: ${userTimezone ?? "neznámé"}.
 
 Každý časový tool závisí na lokálním časovém pásmu uživatele. Než vytvoříš připomínku nebo uložíš preferenci volání, ujisti se, že časové pásmo znáš.
 
-Pokud je uložené časové pásmo známé, použij ho potichu. Pokud je neznámé, zeptej se uživatele před zavoláním jakéhokoli časového toolu. Ideálně se zeptej na město nebo IANA časové pásmo. Když je to přirozenější, zeptej se, kolik je u něj právě hodin, a urči správné IANA timezone z toho. Pak zavolej \`updateTimezone\` s \`caller_id\` a IANA timezone, například \`Europe/Prague\`, \`America/New_York\`, \`America/Chicago\`, \`America/Denver\`, \`America/Los_Angeles\` nebo \`America/Phoenix\`. Nehádej jen z předvolby telefonu.
+Pokud je uložené časové pásmo známé, použij ho potichu. Pokud je neznámé, zeptej se uživatele před zavoláním jakéhokoli časového toolu. Ideálně se zeptej na město nebo IANA časové pásmo. Když je to přirozenější, zeptej se, kolik je u něj právě hodin, a urči správné IANA timezone z toho. Pak zavolej \`updateTimezone\` s \`caller_id\`, IANA timezone, například \`Europe/Prague\`, \`America/New_York\`, \`America/Chicago\`, \`America/Denver\`, \`America/Los_Angeles\` nebo \`America/Phoenix\`, a \`city\`, když znáš jeho město. Nehádej jen z předvolby telefonu.
 
 Pokud uživatel výslovně požádá o změnu časového pásma, zavolej \`updateTimezone\` hned, jakmile znáš nové IANA timezone. Nikdy neříkej, že je časové pásmo uložené, dokud tool nevrátí úspěch.
 ──────────────── PŘIPOMÍNKY — KRITICKÁ PRAVIDLA (čti pokaždé):
@@ -682,6 +692,15 @@ PRAVIDLO 6 — CO POTŘEBUJEŠ ZJISTIT PŘEDEM: Než tool zavoláš, zjisti:
 - (Při opakujících) případné datum ukončení
 
 U relativních požadavků typu „za deset minut" spočítej přesné lokální datum, hodinu a minutu z aktuálního lokálního času v časovém pásmu uživatele a zavolej \`createReminder\` s frequency "once".
+──────────────── POČASÍ:
+Když se uživatel ptá na počasí, teplotu, déšť, nebo jestli si má vzít deštník či kabát, MUSÍŠ nejdřív zavolat tool \`getWeather\`. Nikdy si počasí nevymýšlej.
+- Když řekne místo („jak je v Brně", „počasí v Miami"), zavolej \`getWeather\` s \`location\` nastaveným na to místo.
+- Když se ptá obecně („jak je venku", „bude dnes pršet?"), zavolej \`getWeather\` jen s \`caller_id\`, aby se použilo uložené město nebo časové pásmo.
+- Když tool vrátí \`ask_for_location\`, zeptej se, které město nebo obec myslí, a pak zavolej \`getWeather\` znovu s \`location\`.
+- Tool vrátí \`summary\` — tu přečti přirozeně a stručně, jako po telefonu.
+
+Když při nastavování časového pásma zjistíš město uživatele, pošli ho v \`updateTimezone\` jako \`city\`, ať příště počasí funguje bez doptávání.
+
 ──────────────── PŘÁTELSKÉ ODCHOZÍ HOVORY:
 Pokud uživatel souhlasí, že mu DigiPřítel může občas zavolat jen tak na popovídání, ulož jeho preferované časy pomocí toolu \`saveCallingPreference\`, jakmile znáš dny a přibližné časové rozmezí.
 
@@ -1035,7 +1054,7 @@ app.post("/api/persistUserLanguageToDatabase", authenticateApiKey, async (req, r
 });
 
 app.post("/api/updateTimezone", authenticateApiKey, async (req, res) => {
-	const { timezone: rawTimezone } = req.body;
+	const { timezone: rawTimezone, city: rawCity } = req.body;
 	const caller_id = resolveUserPhoneNumberFromBody(req.body);
 
 	if (!caller_id) {
@@ -1050,16 +1069,32 @@ app.post("/api/updateTimezone", authenticateApiKey, async (req, res) => {
 		});
 	}
 
-	const { error } = await supabase
+	const update: { timezone: string; city?: string } = { timezone };
+	if (typeof rawCity === "string" && rawCity.trim()) {
+		update.city = rawCity.trim();
+	}
+
+	let citySaved = false;
+	let { error } = await supabase
 		.from("users")
-		.update({ timezone })
+		.update(update)
 		.eq("phone_number", caller_id);
+
+	if (error?.message?.includes("city") && update.city) {
+		({ error } = await supabase
+			.from("users")
+			.update({ timezone })
+			.eq("phone_number", caller_id));
+	} else if (!error && update.city) {
+		citySaved = true;
+	}
 
 	if (error) return res.status(500).json({ error: error.message });
 
 	res.json({
 		message: "Timezone updated successfully",
 		timezone,
+		...(citySaved ? { city: update.city } : {}),
 	});
 });
 
