@@ -2,7 +2,7 @@ import { app } from "./app";
 import {
 	getAgentPhoneNumberId,
 	getPhoneNumberToIdMap,
-	resolveCallParticipants,
+	resolveCallParticipantsFromBody,
 	resolveUserPhoneNumberFromBody,
 	resolveUserPhoneNumberFromHeadersOrQuery,
 } from "./lib/callParticipants";
@@ -210,7 +210,6 @@ app.get("/api/webhook/reminder", authenticateApiKey, async (req, res) => {
 // Create a reminder
 app.post("/api/createReminder", authenticateApiKey, async (req, res) => {
 	const {
-		caller_id,
 		reminder_text,
 		time_hour,
 		time_minute,
@@ -220,17 +219,9 @@ app.post("/api/createReminder", authenticateApiKey, async (req, res) => {
 		weekdays,
 		minutes_from_now,
 		agent_id,
-		agent_phone_number,
-		system_caller_id,
-		system_called_number,
 	} = req.body;
 
-	const participants = resolveCallParticipants({
-		callerId: caller_id,
-		agentPhoneNumber: agent_phone_number,
-		systemCallerId: system_caller_id,
-		systemCalledNumber: system_called_number,
-	});
+	const participants = resolveCallParticipantsFromBody(req.body);
 	const userPhoneNumber = participants.userPhoneNumber;
 	const resolvedAgentPhoneNumber = participants.agentPhoneNumber;
 
@@ -241,7 +232,7 @@ app.post("/api/createReminder", authenticateApiKey, async (req, res) => {
 	if (!resolvedAgentPhoneNumber) {
 		return res.status(400).json({
 			error:
-				"Could not determine agent phone number. Send system_caller_id and system_called_number, and make sure PHONE_NUMBER_TO_ID_MAP contains the agent number.",
+				"Could not determine agent phone number. Make sure PHONE_NUMBER_TO_ID_MAP contains the agent line (whichever of caller_id / agent_phone_number / system_* is the agent).",
 		});
 	}
 	if (!reminder_text) {

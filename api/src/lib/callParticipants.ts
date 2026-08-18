@@ -43,46 +43,53 @@ export function resolveCallParticipants(params: {
 	agentPhoneNumber: string | null;
 } {
 	const knownAgentNumbers = getKnownAgentNumberByNormalized();
-	const callerId = normalizePhoneNumber(params.callerId);
-	const explicitAgentPhoneNumber = normalizePhoneNumber(params.agentPhoneNumber);
-	const systemCallerId = normalizePhoneNumber(params.systemCallerId);
-	const systemCalledNumber = normalizePhoneNumber(params.systemCalledNumber);
-	const systemNumbers = [systemCallerId, systemCalledNumber].filter(
-		(value): value is string => Boolean(value),
-	);
+	// Outbound vs inbound can flip which dynamic var is the agent line, so treat
+	// every provided number as a candidate and pick the one in PHONE_NUMBER_TO_ID_MAP.
+	const candidates = [
+		params.systemCallerId,
+		params.systemCalledNumber,
+		params.callerId,
+		params.agentPhoneNumber,
+	]
+		.map(normalizePhoneNumber)
+		.filter((value): value is string => Boolean(value));
 
 	const agentPhoneNumber =
-		systemNumbers
+		[...new Set(candidates)]
 			.map((phoneNumber) => knownAgentNumbers.get(phoneNumber))
-			.find((phoneNumber): phoneNumber is string => Boolean(phoneNumber)) ??
-		(explicitAgentPhoneNumber
-			? knownAgentNumbers.get(explicitAgentPhoneNumber) ?? null
-			: null);
+			.find((phoneNumber): phoneNumber is string => Boolean(phoneNumber)) ?? null;
 
 	const normalizedAgentPhoneNumber = normalizePhoneNumber(agentPhoneNumber);
 	const userPhoneNumber =
-		callerId && callerId !== normalizedAgentPhoneNumber
-			? callerId
-			: systemNumbers.find((phoneNumber) => phoneNumber !== normalizedAgentPhoneNumber) ??
-			null;
+		candidates.find((phoneNumber) => phoneNumber !== normalizedAgentPhoneNumber) ??
+		null;
 
 	return { userPhoneNumber, agentPhoneNumber };
 }
 
 export function resolveUserPhoneNumber(params: {
 	callerId?: unknown;
+	agentPhoneNumber?: unknown;
 	systemCallerId?: unknown;
 	systemCalledNumber?: unknown;
 }): string | null {
 	return resolveCallParticipants(params).userPhoneNumber;
 }
 
-export function resolveUserPhoneNumberFromBody(body: Record<string, unknown>): string | null {
-	return resolveUserPhoneNumber({
+export function resolveCallParticipantsFromBody(body: Record<string, unknown>): {
+	userPhoneNumber: string | null;
+	agentPhoneNumber: string | null;
+} {
+	return resolveCallParticipants({
 		callerId: body.caller_id,
+		agentPhoneNumber: body.agent_phone_number,
 		systemCallerId: body.system_caller_id,
 		systemCalledNumber: body.system_called_number,
 	});
+}
+
+export function resolveUserPhoneNumberFromBody(body: Record<string, unknown>): string | null {
+	return resolveCallParticipantsFromBody(body).userPhoneNumber;
 }
 
 export function resolveUserPhoneNumberFromHeadersOrQuery(req: {
@@ -91,6 +98,8 @@ export function resolveUserPhoneNumberFromHeadersOrQuery(req: {
 }): string | null {
 	const h = req.headers;
 	const headerCallerId = h["caller_id"] ?? h["caller-id"];
+	const headerAgentPhoneNumber =
+		h["agent_phone_number"] ?? h["agent-phone-number"];
 	const headerSystemCallerId = h["system_caller_id"] ?? h["system-caller-id"];
 	const headerSystemCalledNumber =
 		h["system_called_number"] ?? h["system-called-number"];
@@ -100,6 +109,8 @@ export function resolveUserPhoneNumberFromHeadersOrQuery(req: {
 
 	return resolveUserPhoneNumber({
 		callerId: req.query.caller_id ?? firstHeaderValue(headerCallerId),
+		agentPhoneNumber:
+			req.query.agent_phone_number ?? firstHeaderValue(headerAgentPhoneNumber),
 		systemCallerId:
 			req.query.system_caller_id ?? firstHeaderValue(headerSystemCallerId),
 		systemCalledNumber:

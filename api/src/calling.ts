@@ -1,8 +1,7 @@
 import { app } from "./app";
 import {
 	getAgentPhoneNumberId,
-	resolveCallParticipants,
-	resolveUserPhoneNumberFromBody,
+	resolveCallParticipantsFromBody,
 } from "./lib/callParticipants";
 import { getOrInferUserTimezone } from "./lib/userTimezone";
 import { supabase } from "./lib/supabase";
@@ -305,13 +304,8 @@ function normalizePreferenceInput(input: CallingPreferenceInput): {
 }
 
 app.post("/api/saveCallingPreference", authenticateApiKey, async (req, res) => {
-	const caller_id = resolveUserPhoneNumberFromBody(req.body);
-	const participants = resolveCallParticipants({
-		callerId: req.body.caller_id,
-		agentPhoneNumber: req.body.agent_phone_number,
-		systemCallerId: req.body.system_caller_id,
-		systemCalledNumber: req.body.system_called_number,
-	});
+	const participants = resolveCallParticipantsFromBody(req.body);
+	const caller_id = participants.userPhoneNumber;
 	const agentPhoneNumber = participants.agentPhoneNumber;
 	const agentId =
 		typeof req.body.agent_id === "string" && req.body.agent_id.trim()
@@ -330,7 +324,7 @@ app.post("/api/saveCallingPreference", authenticateApiKey, async (req, res) => {
 	if (!agentPhoneNumber) {
 		return res.status(400).json({
 			error:
-				"Could not determine agent phone number. Send system_caller_id and system_called_number, and make sure PHONE_NUMBER_TO_ID_MAP contains the agent number.",
+				"Could not determine agent phone number. Make sure PHONE_NUMBER_TO_ID_MAP contains the agent line (whichever of caller_id / agent_phone_number / system_* is the agent).",
 		});
 	}
 

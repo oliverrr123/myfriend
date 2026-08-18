@@ -21,9 +21,151 @@ const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET;
 
 const PORT = Number(process.env.PORT) || 3001;
 
-const VOICE_MALE = "KgTzZavF7McT7q0opsJu";
-const VOICE_FEMALE = "RILOU7YmBhvwJGDGjNmP";
-const VOICE_DEFAULT = VOICE_MALE;
+type VoiceGender = "male" | "female";
+type VoiceName =
+	| "male"
+	| "american_female"
+	| "american_female_2"
+	| "american_male"
+	| "american_male_2"
+	| "japanese_male"
+	| "japanese_female"
+	| "czech_male"
+	| "czech_female";
+
+const VOICES: Record<
+	VoiceName,
+	{ id: string; gender: VoiceGender; aliases: string[] }
+> = {
+	male: {
+		id: "KgTzZavF7McT7q0opsJu",
+		gender: "male",
+		aliases: ["male", "man", "muž", "muz", "mužský", "muzsky"],
+	},
+	american_female: {
+		id: "bD9maNcCuQQS75DGuteM",
+		gender: "female",
+		aliases: [
+			"american_female",
+			"american female",
+			"female",
+			"woman",
+			"žena",
+			"zena",
+			"ženský",
+			"zensky",
+		],
+	},
+	american_female_2: {
+		id: "M6N6IdXhi5YNZyZSDe7k",
+		gender: "female",
+		aliases: [
+			"american_female_2",
+			"american female 2",
+			"american_female2",
+			"female 2",
+			"female2",
+		],
+	},
+	american_male: {
+		id: "UgBBYS2sOqTuMpoF3BR0",
+		gender: "male",
+		aliases: ["american_male", "american male", "american", "americký", "americky"],
+	},
+	american_male_2: {
+		id: "R9EZoy8pXSL8Yh4yxiew",
+		gender: "male",
+		aliases: [
+			"american_male_2",
+			"american male 2",
+			"american_male2",
+			"american 2",
+			"americký 2",
+			"americky 2",
+		],
+	},
+	japanese_male: {
+		id: "Mv8AjrYZCBkdsmDHNwcB",
+		gender: "male",
+		aliases: ["japanese_male", "japanese male", "japan male", "japonský", "japonsky"],
+	},
+	japanese_female: {
+		id: "c2XJrw7TvNGtOc6r0ijG",
+		gender: "female",
+		aliases: [
+			"japanese_female",
+			"japanese female",
+			"japan female",
+			"japonská",
+			"japonska",
+		],
+	},
+	czech_male: {
+		id: "vP4R9CqQI4q0HlVrXJWj",
+		gender: "male",
+		aliases: ["czech_male", "czech male", "český", "cesky", "český muž", "cesky muz"],
+	},
+	czech_female: {
+		id: "cjDdmfVUe8VozmpZQVUC",
+		gender: "female",
+		aliases: [
+			"czech_female",
+			"czech female",
+			"česká",
+			"ceska",
+			"česká žena",
+			"ceska zena",
+		],
+	},
+};
+
+const VOICE_DEFAULT_NAME: VoiceName = "american_male";
+const VOICE_DEFAULT = VOICES[VOICE_DEFAULT_NAME].id;
+const VOICE_NAMES = Object.keys(VOICES) as VoiceName[];
+const VOICE_NAMES_PROMPT = VOICE_NAMES.join(", ");
+
+function normalizeVoiceKey(value: unknown): string {
+	return String(value ?? "")
+		.trim()
+		.toLowerCase()
+		.replace(/[\s-]+/g, "_");
+}
+
+function resolveVoiceByName(value: unknown): {
+	name: VoiceName;
+	id: string;
+	gender: VoiceGender;
+} | null {
+	const raw = String(value ?? "").trim().toLowerCase();
+	if (!raw) return null;
+	const normalized = normalizeVoiceKey(raw);
+
+	for (const name of VOICE_NAMES) {
+		const voice = VOICES[name];
+		const keys = [name, ...voice.aliases].map((alias) =>
+			normalizeVoiceKey(alias),
+		);
+		if (keys.includes(normalized) || voice.aliases.some((alias) => alias.toLowerCase() === raw)) {
+			return { name, id: voice.id, gender: voice.gender };
+		}
+	}
+	return null;
+}
+
+function resolveVoiceById(voiceId: unknown): {
+	name: VoiceName;
+	id: string;
+	gender: VoiceGender;
+} | null {
+	if (typeof voiceId !== "string" || !voiceId.trim()) return null;
+	for (const name of VOICE_NAMES) {
+		const voice = VOICES[name];
+		if (voice.id === voiceId) {
+			return { name, id: voice.id, gender: voice.gender };
+		}
+	}
+	return null;
+}
 
 /** ISO 639-1 codes accepted for users.language, persistUserLanguageToDatabase, and language_detection (must match agent languages in ElevenLabs). */
 const SUPPORTED_CONVERSATION_LANGUAGES = [
@@ -449,13 +591,23 @@ Podle těchto všech informací zavolej nástroj \`saveCallingPreference\` hned,
 	const timeContextLineCs = userTimezone
 		? `Aktuální lokální čas je ${new Date().toLocaleString("cs-CZ", { timeZone: userTimezone })} v časovém pásmu ${userTimezone}.`
 		: "Uživatel nemá uložené časové pásmo. Před jakýmkoli časovým toolem se zeptej na město/časové pásmo nebo kolik je u něj právě hodin, pak zavolej updateTimezone.";
-	const agentGender: "male" | "female" = (user_data?.agent_gender === "female") ? "female" : "male";
+	const activeVoice =
+		resolveVoiceById(user_data?.agent_voice_id) ??
+		resolveVoiceByName(user_data?.agent_gender) ??
+		{
+			name: VOICE_DEFAULT_NAME,
+			id: VOICE_DEFAULT,
+			gender: VOICES[VOICE_DEFAULT_NAME].gender,
+		};
+	const agentGender: VoiceGender = activeVoice.gender;
 	const genderLineEn = agentGender === "female"
 		? "You are female, so speak in a feminine voice and use feminine grammar and expressions where applicable."
 		: "You are male, so speak in a masculine voice and use masculine grammar and expressions where applicable.";
 	const genderLineCs = agentGender === "female"
 		? "Jsi žena, takže mluv ženským rodem – používej ženské koncovky a výrazy."
 		: "Jsi muž, takže mluv mužským rodem – používej mužské koncovky a výrazy.";
+	const voiceLineEn = `Current voice name: **${activeVoice.name}**. Available voices: ${VOICE_NAMES_PROMPT}.`;
+	const voiceLineCs = `Aktuální hlas: **${activeVoice.name}**. Dostupné hlasy: ${VOICE_NAMES_PROMPT}.`;
 
 	let prompt_en = `
 You are MyFriend, a chill and reliable digital companion. ${genderLineEn} You are designed for seniors who miss good company, but you are not their caregiver. You are their buddy whom they can chat with about anything – from the good old days to absolute nonsense. ${timeContextLineEn}
@@ -586,9 +738,9 @@ Whenever the user asks you to call them something specific—correct their name,
 If one utterance changes both, call **both** tools. Wait until each tool you invoked returns success before saying it is saved—same rule as reminders.
 
 ──────────────── VOICE:
-There are two voices available: **male** (default) and **female**. The current voice is already set from the user's saved preference.
+${voiceLineEn}
 
-If the user asks to switch to a different voice (e.g. "change to female voice", "I want a woman's voice", "switch to the other voice", "change voice to male"), call the \`updateVoice\` tool immediately with \`caller_id\` from dynamic variables and \`voice\` set to either \`male\` or \`female\`. Once the tool returns success, tell the user clearly: the voice has been saved, but **they need to hang up and call back** for the new voice to take effect. The voice does NOT change during the current call — only on the next one. Make this unmistakably clear so the user knows to end the call and dial again.
+If the user asks to switch voice (by gender or by voice name, e.g. "change to american_female", "switch to american_male", "use american female 2"), call the \`updateVoice\` tool immediately with \`caller_id\` from dynamic variables and \`voice\` set to one of: ${VOICE_NAMES_PROMPT}. Once the tool returns success, tell the user clearly: the voice has been saved, but **they need to hang up and call back** for the new voice to take effect. The voice does NOT change during the current call — only on the next one. Make this unmistakably clear so the user knows to end the call and dial again.
 
 ──────────────── ADDITIONAL INSTRUCTIONS:
 If the user wants you to generate code, don't do it. Explain in plain language what they would need instead—reading code over the phone is pointless.
@@ -759,9 +911,9 @@ Kdykoli uživatel řekne, aby jsi mu **nějak říkal**—opraví jméno, dá p�
 
 Pokud jednou větou změní obojí, zavolej **oba** nástroje. Počkej na úspěch každého toolu, který jsi zavolal, než uživateli řekneš, že je to uložené—stejně jako u připomínek.
 ──────────────── HLAS:
-K dispozici jsou dva hlasy: **male** (mužský, výchozí) a **female** (ženský). Aktuální hlas je nastaven podle uložené preference uživatele.
+${voiceLineCs}
 
-Pokud uživatel požádá o změnu hlasu (např. „přepni na ženský hlas", „chci ženský hlas", „změň hlas na mužský"), zavolej tool \`updateVoice\` ihned s \`caller_id\` z dynamic variables a \`voice\` nastaveným na \`male\` nebo \`female\`. Jakmile tool vrátí úspěch, řekni uživateli jasně: hlas byl uložen, ale **musí zavěsit a zavolat znovu**, aby se nový hlas projevil. Změna se NEPROJEVÍ v tomto hovoru — pouze v dalším. Řekni to naprosto jasně, aby uživatel věděl, že musí hovor ukončit a znovu vytočit.
+Pokud uživatel požádá o změnu hlasu (podle pohlaví nebo podle jména hlasu, např. „přepni na american_female", „chci american_male", „dej american female 2"), zavolej tool \`updateVoice\` ihned s \`caller_id\` z dynamic variables a \`voice\` nastaveným na jedno z: ${VOICE_NAMES_PROMPT}. Jakmile tool vrátí úspěch, řekni uživateli jasně: hlas byl uložen, ale **musí zavěsit a zavolat znovu**, aby se nový hlas projevil. Změna se NEPROJEVÍ v tomto hovoru — pouze v dalším. Řekni to naprosto jasně, aby uživatel věděl, že musí hovor ukončit a znovu vytočit.
 
 ──────────────── DALŠÍ INSTRUKCE:
 Pokud uživatel od tebe chce generovat kód, nedělej to. Vysvětli mu, co bude chctít, ale negeneruj kód. Je zbytečné to říkat po telefonu.
@@ -821,7 +973,7 @@ You MUST call the \`createReminder\` tool for every reminder request. Requests l
 	console.log("language:", language);
 	console.log(isFirstCall ? "this is a first call with the user" : "this is not the first call with the user");
 
-	const voiceId = user_data?.agent_voice_id ?? VOICE_DEFAULT;
+	const voiceId = activeVoice.id;
 
 	res.json({
 		type: "conversation_initiation_client_data",
@@ -1024,28 +1176,32 @@ app.post("/api/updateVoice", authenticateApiKey, async (req, res) => {
 	const caller_id = resolveUserPhoneNumberFromBody(req.body);
 
 	if (!caller_id) return res.status(400).json({ error: "Missing caller_id" });
-	if (!voice) return res.status(400).json({ error: "Missing voice. Use: male or female" });
-
-	const voiceMap: Record<string, string> = {
-		male: VOICE_MALE,
-		female: VOICE_FEMALE,
-	};
-
-	const voiceId = voiceMap[String(voice).trim().toLowerCase()];
-	if (!voiceId) {
-		return res.status(400).json({ error: "Invalid voice. Use: male or female" });
+	if (!voice) {
+		return res.status(400).json({
+			error: `Missing voice. Use one of: ${VOICE_NAMES_PROMPT}`,
+		});
 	}
 
-	const normalizedVoice = String(voice).trim().toLowerCase() as "male" | "female";
+	const resolved = resolveVoiceByName(voice);
+	if (!resolved) {
+		return res.status(400).json({
+			error: `Invalid voice. Use one of: ${VOICE_NAMES_PROMPT}`,
+		});
+	}
 
 	const { error } = await supabase
 		.from("users")
-		.update({ agent_voice_id: voiceId, agent_gender: normalizedVoice })
+		.update({ agent_voice_id: resolved.id, agent_gender: resolved.gender })
 		.eq("phone_number", caller_id);
 
 	if (error) return res.status(500).json({ error: error.message });
 
-	res.json({ message: "Voice updated successfully", voice_id: voiceId, gender: normalizedVoice });
+	res.json({
+		message: "Voice updated successfully",
+		voice: resolved.name,
+		voice_id: resolved.id,
+		gender: resolved.gender,
+	});
 });
 
 app.post("/api/persistUserLanguageToDatabase", authenticateApiKey, async (req, res) => {
