@@ -2,7 +2,7 @@
 
 A companion for elderly
 
-![MyFriend](https://growbyte.co/images/robo-companion/myfriend-talking-to-senior.jpg)
+![MyFriend](https://growbyte.co/images/robo-companion/robo-companion.png)
 
 In the United States, 16.2 million seniors live completely alone. That's more people than the entire population of several U.S. states combined. Many of them rarely see their family, or not at all, and loneliness becomes part of their daily life.
 
