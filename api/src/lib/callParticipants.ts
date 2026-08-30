@@ -1,8 +1,7 @@
-export function normalizePhoneNumber(value: unknown): string | null {
-	if (typeof value !== "string") return null;
-	const normalized = value.trim().replace(/[\s-]/g, "");
-	return normalized || null;
-}
+import { knownAgentLineNumbers } from "./agentLines";
+import { normalizePhoneNumber } from "./phoneNormalize";
+
+export { normalizePhoneNumber };
 
 export function getPhoneNumberToIdMap(): Record<string, string> {
 	return JSON.parse(process.env.PHONE_NUMBER_TO_ID_MAP || "{}") as Record<
@@ -13,14 +12,21 @@ export function getPhoneNumberToIdMap(): Record<string, string> {
 
 function getKnownAgentNumberByNormalized(): Map<string, string> {
 	const phoneMap = getPhoneNumberToIdMap();
-	return new Map(
-		Object.keys(phoneMap)
-			.map((phoneNumber) => {
-				const normalized = normalizePhoneNumber(phoneNumber);
-				return normalized ? ([normalized, phoneNumber] as const) : null;
-			})
-			.filter((entry): entry is readonly [string, string] => Boolean(entry)),
-	);
+	const fromMap = Object.keys(phoneMap)
+		.map((phoneNumber) => {
+			const normalized = normalizePhoneNumber(phoneNumber);
+			return normalized ? ([normalized, phoneNumber] as const) : null;
+		})
+		.filter((entry): entry is readonly [string, string] => Boolean(entry));
+
+	const extras = knownAgentLineNumbers()
+		.map((phoneNumber) => {
+			const normalized = normalizePhoneNumber(phoneNumber);
+			return normalized ? ([normalized, phoneNumber] as const) : null;
+		})
+		.filter((entry): entry is readonly [string, string] => Boolean(entry));
+
+	return new Map([...extras, ...fromMap]);
 }
 
 export function getAgentPhoneNumberId(agentPhoneNumber: unknown): string | null {
@@ -38,6 +44,7 @@ export function resolveCallParticipants(params: {
 	agentPhoneNumber?: unknown;
 	systemCallerId?: unknown;
 	systemCalledNumber?: unknown;
+	calledNumber?: unknown;
 }): {
 	userPhoneNumber: string | null;
 	agentPhoneNumber: string | null;
@@ -48,6 +55,7 @@ export function resolveCallParticipants(params: {
 	const candidates = [
 		params.systemCallerId,
 		params.systemCalledNumber,
+		params.calledNumber,
 		params.callerId,
 		params.agentPhoneNumber,
 	]
@@ -72,6 +80,7 @@ export function resolveUserPhoneNumber(params: {
 	agentPhoneNumber?: unknown;
 	systemCallerId?: unknown;
 	systemCalledNumber?: unknown;
+	calledNumber?: unknown;
 }): string | null {
 	return resolveCallParticipants(params).userPhoneNumber;
 }
@@ -85,6 +94,7 @@ export function resolveCallParticipantsFromBody(body: Record<string, unknown>): 
 		agentPhoneNumber: body.agent_phone_number,
 		systemCallerId: body.system_caller_id,
 		systemCalledNumber: body.system_called_number,
+		calledNumber: body.called_number ?? body.calledNumber,
 	});
 }
 
@@ -103,6 +113,7 @@ export function resolveUserPhoneNumberFromHeadersOrQuery(req: {
 	const headerSystemCallerId = h["system_caller_id"] ?? h["system-caller-id"];
 	const headerSystemCalledNumber =
 		h["system_called_number"] ?? h["system-called-number"];
+	const headerCalledNumber = h["called_number"] ?? h["called-number"];
 
 	const firstHeaderValue = (value: string | string[] | undefined): string | undefined =>
 		Array.isArray(value) ? value[0] : value;
@@ -115,5 +126,6 @@ export function resolveUserPhoneNumberFromHeadersOrQuery(req: {
 			req.query.system_caller_id ?? firstHeaderValue(headerSystemCallerId),
 		systemCalledNumber:
 			req.query.system_called_number ?? firstHeaderValue(headerSystemCalledNumber),
+		calledNumber: req.query.called_number ?? firstHeaderValue(headerCalledNumber),
 	});
 }

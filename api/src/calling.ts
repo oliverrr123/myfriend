@@ -3,6 +3,7 @@ import {
 	getAgentPhoneNumberId,
 	resolveCallParticipantsFromBody,
 } from "./lib/callParticipants";
+import { getAgentLineConfig } from "./lib/agentLines";
 import { getOrInferUserTimezone } from "./lib/userTimezone";
 import { supabase } from "./lib/supabase";
 import { cronDateNumber, timeZoneParts } from "./lib/timezone";
@@ -134,8 +135,10 @@ function fallbackFriendlyFirstMessage(params: {
 	language: string;
 	name: string;
 	topics: Array<{ topic: string }>;
+	brandName?: string;
 }): string {
-	return "Hey, this is MyFriend. I thought I'd call and see if you have a minute to chat.";
+	const brandName = params.brandName ?? "MyFriend";
+	return `Hey, this is ${brandName}. I thought I'd call and see if you have a minute to chat.`;
 }
 
 function sanitizeFirstMessage(message: string): string {
@@ -150,10 +153,12 @@ async function generateFriendlyFirstMessage(params: {
 	language: string;
 	name: string;
 	topics: Array<{ topic: string; time_from: string; time_to: string }>;
+	brandName?: string;
 }): Promise<string> {
 	const fallback = fallbackFriendlyFirstMessage(params);
 	const apiKey = process.env.OPENAI_API_KEY;
 	if (!apiKey) return fallback;
+	const brandName = params.brandName ?? "MyFriend";
 
 	const languageInstruction =
 		params.language === "cs"
@@ -171,7 +176,7 @@ async function generateFriendlyFirstMessage(params: {
 			)
 			: "[]";
 
-	const system = `You write the first spoken line for an outbound phone call from MyFriend, an AI companion for seniors.
+	const system = `You write the first spoken line for an outbound phone call from ${brandName}, an AI companion for seniors.
 Return exactly one short natural spoken message, no JSON, no quotation marks.
 Make it feel fresh and specific, not repetitive.
 If there are active topics, gently use one of them in the opener.
@@ -222,6 +227,7 @@ ${topicBlock}`;
 async function getOutboundConversationInitiationData(params: {
 	callerId: string;
 	firstMessage: string;
+	agentPhoneNumber?: string | null;
 }): Promise<ConversationInitiationData> {
 	const apiUrl = getApiUrl();
 	const response = await fetch(`${apiUrl}/api/initCall`, {
@@ -230,7 +236,10 @@ async function getOutboundConversationInitiationData(params: {
 			Authorization: `Bearer ${process.env.API_KEY}`,
 			"Content-Type": "application/json",
 		},
-		body: JSON.stringify({ caller_id: params.callerId }),
+		body: JSON.stringify({
+			caller_id: params.callerId,
+			agent_phone_number: params.agentPhoneNumber,
+		}),
 	});
 
 	if (!response.ok) {
@@ -632,15 +641,18 @@ app.get("/api/webhook/call-user", authenticateApiKey, async (req, res) => {
 		const topics = await loadActiveTopicsForUser(user.id);
 		const language = user.language || "cs";
 		const name = user.nickname_vocative || user.first_name_vocative || "";
+		const brandName = getAgentLineConfig(agentPhoneNumber)?.name ?? "MyFriend";
 		const firstMessage = await generateFriendlyFirstMessage({
 			language,
 			name,
 			topics,
+			brandName,
 		});
 		const conversationInitiationClientData =
 			await getOutboundConversationInitiationData({
 				callerId: user.phone_number,
 				firstMessage,
+				agentPhoneNumber,
 			});
 
 		const response = await fetch(

@@ -1,5 +1,10 @@
 import { app } from "./app";
-import { resolveUserPhoneNumberFromBody } from "./lib/callParticipants";
+import { resolveCallParticipantsFromBody, resolveUserPhoneNumberFromBody } from "./lib/callParticipants";
+import {
+	applyBrandName,
+	findConfiguredAgentNumber,
+	getAgentLineConfig,
+} from "./lib/agentLines";
 import { inferLanguageCodeFromE164 } from "./lib/phoneLanguagePrefix";
 import { supabase } from "./lib/supabase";
 import { normalizeTimezone } from "./lib/timezone";
@@ -8,6 +13,17 @@ import "./reminder";
 import "./facts";
 import "./calling";
 import "./weather";
+import "./billing";
+import { issueVerificationCode } from "./lib/phoneVerification";
+import { resolveCallAccess, type CallAccess, type CallMode } from "./lib/subscriptions";
+import {
+	informatoryFirstMessage,
+	informatoryPrompt,
+	introVerifyFirstMessage,
+	introVerifyPrompt,
+	paymentRequiredFirstMessage,
+	paymentRequiredPrompt,
+} from "./lib/callModes";
 import {
 	analyzeAndPersistConversationTopics,
 	formatActiveTopicsForPrompt,
@@ -485,16 +501,44 @@ app.get("/health", (req, res) => {
 // ElevenLabs conversation initiation webhook
 app.post("/api/initCall", authenticateApiKey, async (req, res) => {
 	var { caller_id } = req.body;
+	const participants = resolveCallParticipantsFromBody(req.body);
+	const agentPhoneNumber =
+		participants.agentPhoneNumber ??
+		findConfiguredAgentNumber([
+			req.body.called_number,
+			req.body.calledNumber,
+			req.body.agent_phone_number,
+			req.body.system_called_number,
+			req.body.system__called_number,
+			req.body.system_caller_id,
+			req.body.system__caller_id,
+			req.body.caller_id,
+		]);
+	const agentLine = getAgentLineConfig(agentPhoneNumber);
 
 	if (!caller_id) return res.status(400).json({ error: "Missing caller_id" });
+	if (participants.userPhoneNumber) {
+		caller_id = participants.userPhoneNumber;
+	}
 
 	// if (caller_id === "+420776781248") caller_id = "+420test"; // !!!
 
-	const { data: user_data, error: user_error } = await supabase
+	let { data: user_data, error: user_error } = await supabase
 		.from("users")
-		.select("id, nickname_vocative, first_name_vocative, language, agent_voice_id, agent_gender, timezone")
+		.select("id, first_name, nickname, nickname_vocative, first_name_vocative, language, agent_voice_id, agent_gender, timezone, grandfathered")
 		.eq("phone_number", caller_id)
 		.maybeSingle();
+
+	if (user_error?.message?.includes("grandfathered")) {
+		({ data: user_data, error: user_error } = await supabase
+			.from("users")
+			.select("id, first_name, nickname, nickname_vocative, first_name_vocative, language, agent_voice_id, agent_gender, timezone")
+			.eq("phone_number", caller_id)
+			.maybeSingle());
+		if (user_data) {
+			user_data = { ...user_data, grandfathered: true };
+		}
+	}
 
 	if (user_error) return res.status(500).json({ error: user_error.message });
 
@@ -564,26 +608,61 @@ Uživatel ti řekne kdy má čas volat, např. každý den odpoledne kromě pond
 Podle těchto všech informací zavolej nástroj \`saveCallingPreference\` hned, jakmile máš použitelné dny a časové rozmezí. Dny používej stejně jako u připomínek: neděle=0, pondělí=1, úterý=2, středa=3, čtvrtek=4, pátek=5, sobota=6. Časy používej ve formátu HH:mm ve 24hodinovém formátu, hour_range_from je včetně a hour_range_to je konec rozmezí. Příklad: "o víkendu odpoledne" = weekdays [0,6], hour_range_from "13:00", hour_range_to "18:00". Pokud má pro různé dny různé časy, ulož více záznamů.
 `;
 
+	const brandName = agentLine?.name ?? "MyFriend";
+	const firstCallLanguage = languageFromPhonePrefix(caller_id);
+
 	if (user_data) {
 		console.log("user_data found in database");
 		const name = user_data.nickname_vocative || user_data.first_name_vocative;
 		if (isFirstCall) {
-			language = languageFromPhonePrefix(caller_id);
-			message = FIRST_CALL_INTRO_BY_LANGUAGE[language];
+			language = firstCallLanguage;
+			message = applyBrandName(FIRST_CALL_INTRO_BY_LANGUAGE[language], brandName);
 		} else {
 			language = normalizeConversationLanguage(user_data.language, caller_id);
 			message = welcomeBackForLanguage(language, name);
 		}
 	} else {
 		console.log("user_data not found in database");
-		language = languageFromPhonePrefix(caller_id);
-		message = FIRST_CALL_INTRO_BY_LANGUAGE[language];
-		await supabase.from("users").insert({
+		language = firstCallLanguage;
+		message = applyBrandName(FIRST_CALL_INTRO_BY_LANGUAGE[language], brandName);
+		const inserted = await supabase.from("users").insert({
 			phone_number: caller_id,
 			language: language,
+			grandfathered: false,
 		});
+		if (inserted.error?.message?.includes("grandfathered")) {
+			await supabase.from("users").insert({
+				phone_number: caller_id,
+				language: language,
+			});
+		}
 	}
+	console.log("agent line:", brandName, agentPhoneNumber ?? "(unknown)");
 	console.log("message:", message);
+
+	let callMode: CallMode = "full";
+	let callAccess: CallAccess = {
+		mode: "full",
+		role: "none",
+		subscription: null,
+		seniorName: null,
+		seniorPhone: null,
+		lastSeniorCallAt: null,
+	};
+	if (agentLine?.freeCompanion) {
+		console.log("free companion line, skipping paid access");
+	} else {
+		try {
+			callAccess = await resolveCallAccess({
+				phoneNumber: caller_id,
+				grandfathered: user_data?.grandfathered ?? false,
+			});
+			callMode = callAccess.mode;
+		} catch (error) {
+			console.error("resolveCallAccess failed, defaulting to full companion:", error);
+		}
+	}
+	console.log("callMode:", callMode);
 
 	const timeContextLineEn = userTimezone
 		? `The current local time is ${new Date().toLocaleString("en-US", { timeZone: userTimezone })} in ${userTimezone}.`
@@ -608,6 +687,110 @@ Podle těchto všech informací zavolej nástroj \`saveCallingPreference\` hned,
 		: "Jsi muž, takže mluv mužským rodem – používej mužské koncovky a výrazy.";
 	const voiceLineEn = `Current voice name: **${activeVoice.name}**. Available voices: ${VOICE_NAMES_PROMPT}.`;
 	const voiceLineCs = `Aktuální hlas: **${activeVoice.name}**. Dostupné hlasy: ${VOICE_NAMES_PROMPT}.`;
+
+	if (callMode !== "full") {
+		const displayName =
+			user_data?.nickname_vocative ||
+			user_data?.first_name_vocative ||
+			user_data?.nickname ||
+			user_data?.first_name ||
+			null;
+
+		if (callMode === "intro_verify") {
+			let code: string;
+			try {
+				code = await issueVerificationCode(caller_id);
+			} catch (error) {
+				console.error("issueVerificationCode failed:", error);
+				return res.status(500).json({ error: "Could not start verification." });
+			}
+			message = introVerifyFirstMessage(displayName);
+			language = languageFromPhonePrefix(caller_id);
+			const systemPrompt = introVerifyPrompt({
+				code,
+				hasName: Boolean(displayName),
+				genderLine: genderLineEn,
+			});
+			console.log("callMode intro_verify: issued a verification code");
+			return res.json({
+				type: "conversation_initiation_client_data",
+				dynamic_variables: {
+					caller_id: caller_id,
+					user_timezone: userTimezone ?? "",
+					active_topic_ids: "",
+				},
+				conversation_config_override: {
+					agent: {
+						first_message: message,
+						language: language,
+						prompt: {
+							prompt: systemPrompt,
+						},
+					},
+					tts: {
+						voice_id: activeVoice.id,
+					},
+				},
+			});
+		}
+
+		if (callMode === "informatory") {
+			message = informatoryFirstMessage(displayName);
+			language = normalizeConversationLanguage(user_data?.language, caller_id);
+			const systemPrompt = informatoryPrompt({
+				access: callAccess,
+				buyerName: displayName,
+				genderLine: genderLineEn,
+			});
+			return res.json({
+				type: "conversation_initiation_client_data",
+				dynamic_variables: {
+					caller_id: caller_id,
+					user_timezone: userTimezone ?? "",
+					active_topic_ids: "",
+				},
+				conversation_config_override: {
+					agent: {
+						first_message: message,
+						language: language,
+						prompt: {
+							prompt: systemPrompt,
+						},
+					},
+					tts: {
+						voice_id: activeVoice.id,
+					},
+				},
+			});
+		}
+
+		message = paymentRequiredFirstMessage(displayName);
+		language = normalizeConversationLanguage(user_data?.language, caller_id);
+		const systemPrompt = paymentRequiredPrompt({
+			access: callAccess,
+			genderLine: genderLineEn,
+		});
+		return res.json({
+			type: "conversation_initiation_client_data",
+			dynamic_variables: {
+				caller_id: caller_id,
+				user_timezone: userTimezone ?? "",
+				active_topic_ids: "",
+			},
+			conversation_config_override: {
+				agent: {
+					first_message: message,
+					language: language,
+					prompt: {
+						prompt: systemPrompt,
+					},
+				},
+				tts: {
+					voice_id: activeVoice.id,
+				},
+			},
+		});
+	}
 
 	let prompt_en = `
 You are MyFriend, a chill and reliable digital companion. ${genderLineEn} You are designed for seniors who miss good company, but you are not their caregiver. You are their buddy whom they can chat with about anything – from the good old days to absolute nonsense. ${timeContextLineEn}
@@ -747,7 +930,7 @@ If the user wants you to generate code, don't do it. Explain in plain language w
 
 You were created by Oliver Cingl in collaboration with Zdeněk Svoboda. Zdeněk Svoboda runs workshops and lectures for seniors, mainly on mental health.
 
-The MyFriend website is growbyte.co/myfriend. There you can find contact for the project author, Oliver Cingl.
+The website is trymyfriend.com. There you can find contact for the project author, Oliver Cingl.
 
 Don't say "buddy" (or similar overly casual stuff). You're speaking with seniors—keep it warm and natural without that word.
 
@@ -957,6 +1140,7 @@ ${conversation_data.length > 1 ?
 	`
 
 	let systemPrompt = language === "cs" ? prompt_cs : prompt_en;
+	systemPrompt = applyBrandName(systemPrompt, brandName);
 	if (language !== "cs" && language !== "en") {
 		systemPrompt += `
 ──────────────── SESSION LANGUAGE:

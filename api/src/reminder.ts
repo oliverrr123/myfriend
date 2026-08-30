@@ -6,6 +6,7 @@ import {
 	resolveUserPhoneNumberFromBody,
 	resolveUserPhoneNumberFromHeadersOrQuery,
 } from "./lib/callParticipants";
+import { applyBrandName, getAgentLineConfig } from "./lib/agentLines";
 import { getOrInferUserTimezone } from "./lib/userTimezone";
 import { supabase } from "./lib/supabase";
 import { cronDateNumber, timeZoneParts } from "./lib/timezone";
@@ -68,6 +69,7 @@ function getApiUrl(): string {
 async function getReminderConversationInitiationData(params: {
 	callerId: string;
 	reminderText: string;
+	agentPhoneNumber?: string | null;
 }): Promise<ConversationInitiationData> {
 	const response = await fetch(`${getApiUrl()}/api/initCall`, {
 		method: "POST",
@@ -75,7 +77,10 @@ async function getReminderConversationInitiationData(params: {
 			Authorization: `Bearer ${process.env.API_KEY}`,
 			"Content-Type": "application/json",
 		},
-		body: JSON.stringify({ caller_id: params.callerId }),
+		body: JSON.stringify({
+			caller_id: params.callerId,
+			agent_phone_number: params.agentPhoneNumber,
+		}),
 	});
 
 	console.log("--------------------------------")
@@ -99,10 +104,14 @@ async function getReminderConversationInitiationData(params: {
 	data.conversation_config_override.agent.first_message = params.reminderText;
 
 	const language = data.conversation_config_override.agent.language;
+	const brandName = getAgentLineConfig(params.agentPhoneNumber)?.name ?? "MyFriend";
 	const reminderInstruction =
 		language === "cs"
 			? `\n\n──────────────── ODCHOZÍ PŘIPOMÍNKA:\nTentokrát voláš uživateli ty kvůli připomínce. Tvá první a hlavní povinnost je jasně předat tuto připomínku: "${params.reminderText}"\nUjisti se, že ji uživatel slyšel nebo pochopil. Pokud jen poděkuje nebo potvrdí, můžeš hovor krátce a mile ukončit. Pokud ale chce pokračovat v rozhovoru, pokračuj normálně jako DigiPřítel se všemi pravidly, pamětí, nástroji a stylem z hlavního promptu.`
-			: `\n\n──────────────── OUTBOUND REMINDER CALL:\nThis time you called the user because of a reminder. Your first and primary job is to clearly deliver this reminder: "${params.reminderText}"\nMake sure the user heard or understood it. If they simply thank you or confirm, you may end the call briefly and warmly. If they want to keep talking, continue normally as MyFriend with all the rules, memory, tools, and style from the main prompt.`;
+			: applyBrandName(
+				`\n\n──────────────── OUTBOUND REMINDER CALL:\nThis time you called the user because of a reminder. Your first and primary job is to clearly deliver this reminder: "${params.reminderText}"\nMake sure the user heard or understood it. If they simply thank you or confirm, you may end the call briefly and warmly. If they want to keep talking, continue normally as MyFriend with all the rules, memory, tools, and style from the main prompt.`,
+				brandName,
+			);
 
 	const prompt = data.conversation_config_override.agent.prompt?.prompt;
 	if (prompt) {
@@ -170,6 +179,7 @@ app.get("/api/webhook/reminder", authenticateApiKey, async (req, res) => {
 			await getReminderConversationInitiationData({
 				callerId: reminder.phone_number,
 				reminderText: reminder.text,
+				agentPhoneNumber: reminder.agent_phone_number,
 			});
 
 		// Make the call
