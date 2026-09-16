@@ -31,3 +31,5 @@ coverage
 
 # Fly.io
 .fly
+
+.env.sms-routing-backup.json

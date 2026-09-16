@@ -367,6 +367,14 @@ export async function setSeniorPhone(params: {
 	}
 
 	const seniorUserId = await ensureUserForPhone(seniorPhone);
+	if (subscription.senior_phone_number !== seniorPhone) {
+		// Do not revive an earlier person's sharing consent if numbers are changed back.
+		const { error: consentError } = await supabase
+			.from("daily_checkin_preferences")
+			.update({ consent_senior_phone: null, calls_consent_at: null, reports_consent_at: null, updated_at: new Date().toISOString() })
+			.eq("subscription_id", subscription.id);
+		if (consentError) throw new Error(consentError.message);
+	}
 	const { data, error } = await supabase
 		.from("subscriptions")
 		.update({
@@ -381,9 +389,41 @@ export async function setSeniorPhone(params: {
 	return data as SubscriptionRow;
 }
 
+export async function setBuyerPhone(params: { buyerPhone: string; newPhone: string }): Promise<SubscriptionRow> {
+ const buyerPhone = normalizePhoneNumber(params.buyerPhone);
+ const newPhone = normalizePhoneNumber(params.newPhone);
+ if (!buyerPhone || !newPhone) throw Object.assign(new Error("Enter a valid phone number."), { status: 400 });
+ const subscription = await findSubscriptionByPhone(buyerPhone);
+ if (!subscription || subscription.buyer_phone_number !== buyerPhone)
+  throw Object.assign(new Error("Account not found."), { status: 404 });
+ if (newPhone === buyerPhone) return subscription;
+ const { data: taken, error: lookupError } = await supabase.from("subscriptions").select("id")
+  .or(`buyer_phone_number.eq.${newPhone},senior_phone_number.eq.${newPhone}`).neq("id", subscription.id).limit(1);
+ if (lookupError) throw lookupError;
+ if (taken?.length) throw Object.assign(new Error("That number is already linked to another plan."), { status: 409 });
+ const userId = await ensureUserForPhone(newPhone);
+ const forMyself = subscription.senior_phone_number === buyerPhone;
+ // Changing who receives family updates also requires fresh sharing consent.
+ const { error: consentError } = await supabase.from("daily_checkin_preferences")
+  .update({ reports_consent_at: null, ...(forMyself ? { consent_senior_phone: null, calls_consent_at: null } : {}), updated_at: new Date().toISOString() })
+  .eq("subscription_id", subscription.id);
+ if (consentError) throw consentError;
+ const { data, error } = await supabase.from("subscriptions").update({
+  buyer_phone_number: newPhone, buyer_user_id: userId,
+  ...(forMyself ? { senior_phone_number: newPhone, senior_user_id: userId } : {}),
+  updated_at: new Date().toISOString(),
+ }).eq("id", subscription.id).eq("buyer_phone_number", buyerPhone).select(SUBSCRIPTION_COLUMNS).single();
+ if (error) {
+  if (error.code === "23505") throw Object.assign(new Error("That number is already linked to another plan."), { status: 409 });
+  throw error;
+ }
+ return data as SubscriptionRow;
+}
+
 export async function getAccountForBuyer(buyerPhone: string): Promise<{
 	subscription: SubscriptionRow;
 	seniorFirstName: string | null;
+	relationship: string | null;
 } | null> {
 	const phone = normalizePhoneNumber(buyerPhone);
 	if (!phone) return null;
@@ -394,5 +434,9 @@ export async function getAccountForBuyer(buyerPhone: string): Promise<{
 	const { seniorName } = await loadSeniorCallContext(
 		subscription.senior_phone_number,
 	);
-	return { subscription, seniorFirstName: seniorName };
+	const { data: onboarding, error: onboardingError } = await supabase.from("onboarding_submissions")
+  .select("answers").eq("subscription_id", subscription.id).order("created_at", { ascending: false }).limit(1).maybeSingle();
+ if (onboardingError) throw onboardingError;
+ const relationship = typeof onboarding?.answers?.relationship === "string" ? onboarding.answers.relationship : null;
+ return { subscription, seniorFirstName: seniorName, relationship };
 }

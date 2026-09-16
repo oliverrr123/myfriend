@@ -14,6 +14,10 @@ import "./facts";
 import "./calling";
 import "./weather";
 import "./billing";
+import "./emailLogin";
+import { checkinPrompt, recordCheckinReport } from "./checkins";
+import { recordDailyDigestEvent } from "./lib/dailyDigestEvents";
+import { startFamilyMessaging } from "./familyMessaging";
 import { issueVerificationCode } from "./lib/phoneVerification";
 import { resolveCallAccess, type CallAccess, type CallMode } from "./lib/subscriptions";
 import {
@@ -1140,6 +1144,7 @@ ${conversation_data.length > 1 ?
 	`
 
 	let systemPrompt = language === "cs" ? prompt_cs : prompt_en;
+	systemPrompt += await checkinPrompt(caller_id);
 	systemPrompt = applyBrandName(systemPrompt, brandName);
 	if (language !== "cs" && language !== "en") {
 		systemPrompt += `
@@ -1213,6 +1218,11 @@ app.post("/api/endCall", express.text({ type: 'application/json', limit: '25mb' 
 			event.data.metadata.call_duration_secs * 1000,
 		);
 
+		try {
+			await recordCheckinReport(event.data.conversation_id, phoneNumber, event.data.analysis.transcript_summary, event.data.metadata.call_duration_secs);
+		} catch {
+			return res.status(503).json({ error: "Could not save check-in report." });
+		}
 		const { error } = await supabase.from("conversation_storage").insert({
 			call_id: event.data.conversation_id,
 			started_at: event.data.metadata.start_time_unix_secs,
@@ -1223,6 +1233,8 @@ app.post("/api/endCall", express.text({ type: 'application/json', limit: '25mb' 
 		})
 		console.log(error)
 		if (error) return res.status(500).json({ error: error.message });
+		try { await recordDailyDigestEvent(event.data); }
+		catch { return res.status(503).json({error:"Could not record daily digest event."}); }
 
 		const { data: user, error: userError } = await supabase
 			.from("users")
@@ -1474,4 +1486,5 @@ app.post("/api/updateTimezone", authenticateApiKey, async (req, res) => {
 // Start server
 app.listen(PORT, "0.0.0.0", () => {
 	console.log(`🚀 Server running on http://localhost:${PORT}`);
+	void startFamilyMessaging().catch(() => console.error("Family messaging startup failed"));
 });

@@ -1,0 +1,21 @@
+{
+  "type": "webhook",
+  "name": "confirmDailyCheckins",
+  "description": "Save the current caller's explicit choices about friendly calls and sharing brief updates with the family member who set up the plan. Ask separately about calls and sharing, and pass both answers. The caller chooses their own schedule: use saveCallingPreference to save their chosen windows. A family suggestion is never consent. Use only for the linked loved one, never on the purchaser's behalf. Also use to revoke either permission. Confirm only after this tool succeeds.",
+  "response_timeout_secs": 15,
+  "api_schema": {
+    "url": "https://api-nameless-water-1932.fly.dev/api/confirmDailyCheckins",
+    "method": "POST",
+    "request_headers": { "Authorization": { "secret_id": "USE_WORKSPACE_BEARER_SECRET" } },
+    "request_body_schema": {
+      "type": "object",
+      "required": ["caller_id", "agent_phone_number", "allow_calls", "allow_reports"],
+      "properties": {
+        "caller_id": { "type": "string", "dynamic_variable": "system__caller_id" },
+        "agent_phone_number": { "type": "string", "dynamic_variable": "system__called_number" },
+        "allow_calls": { "type": "boolean", "description": "True only when the caller explicitly agrees to friendly calls on their own chosen schedule. Save that schedule with saveCallingPreference. False when they decline or revoke." },
+        "allow_reports": { "type": "boolean", "description": "True only when the caller explicitly agrees to share short call summaries with their family. False when they decline or revoke." }
+      }
+    }
+  }
+}

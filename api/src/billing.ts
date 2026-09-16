@@ -3,11 +3,13 @@ import { authenticateApiKey } from "./middleware/auth";
 import { normalizePhoneNumber } from "./lib/callParticipants";
 import { consumeVerificationCode } from "./lib/phoneVerification";
 import { supabase } from "./lib/supabase";
+import { linkOnboardingSubmission } from "./onboarding";
 import {
 	activateSubscription,
 	getAccountForBuyer,
 	mapStripeStatus,
 	setSeniorPhone,
+	setBuyerPhone,
 	syncStripeSubscription,
 	type SubscriptionStatus,
 } from "./lib/subscriptions";
@@ -24,7 +26,7 @@ function periodEndFromUnknown(value: unknown): string | null {
 	return null;
 }
 
-function accountPayload(
+export function accountPayload(
 	subscription: {
 		buyer_phone_number: string;
 		senior_phone_number: string | null;
@@ -34,6 +36,7 @@ function accountPayload(
 		stripe_customer_id: string | null;
 	},
 	seniorFirstName: string | null,
+	relationship: string | null = null,
 ) {
 	return {
 		buyer_phone_number: subscription.buyer_phone_number,
@@ -45,6 +48,7 @@ function accountPayload(
 		status: subscription.status,
 		current_period_end: subscription.current_period_end,
 		senior_first_name: seniorFirstName,
+	relationship,
 		stripe_customer_id: subscription.stripe_customer_id,
 	};
 }
@@ -108,6 +112,9 @@ app.post("/api/activateSubscription", authenticateApiKey, async (req, res) => {
 			status,
 			currentPeriodEnd: periodEndFromUnknown(req.body?.current_period_end),
 		});
+		if (typeof req.body?.checkout_session_id === "string") {
+			await linkOnboardingSubmission(req.body.checkout_session_id, subscription.id);
+		}
 		return res.json({ ok: true, subscription });
 	} catch (error) {
 		console.error("activateSubscription failed", error);
@@ -164,7 +171,7 @@ app.get("/api/account", authenticateApiKey, async (req, res) => {
 		if (!account) {
 			return res.status(404).json({ error: "No MyFriend account for this number." });
 		}
-		return res.json(accountPayload(account.subscription, account.seniorFirstName));
+		return res.json(accountPayload(account.subscription, account.seniorFirstName, account.relationship));
 	} catch (error) {
 		console.error("get account failed", error);
 		return res.status(500).json({ error: "Could not load account." });
@@ -186,7 +193,7 @@ app.post("/api/account/senior-phone", authenticateApiKey, async (req, res) => {
 		const subscription = await setSeniorPhone({ buyerPhone, seniorPhone });
 		const account = await getAccountForBuyer(buyerPhone);
 		return res.json(
-			accountPayload(subscription, account?.seniorFirstName ?? null),
+			accountPayload(subscription, account?.seniorFirstName ?? null, account?.relationship),
 		);
 	} catch (error) {
 		const status = (error as Error & { status?: number }).status ?? 500;
@@ -198,4 +205,17 @@ app.post("/api/account/senior-phone", authenticateApiKey, async (req, res) => {
 					: "Could not save that phone number.",
 		});
 	}
+});
+
+app.post("/api/account/buyer-phone", authenticateApiKey, async (req, res) => {
+ const buyerPhone = normalizePhoneNumber(req.body?.buyer_phone);
+ const newPhone = normalizePhoneNumber(req.body?.new_phone);
+ if (!buyerPhone || !newPhone) return res.status(400).json({ error: "Enter a valid phone number." });
+ try {
+  const subscription = await setBuyerPhone({ buyerPhone, newPhone });
+  const account = await getAccountForBuyer(newPhone);
+  return res.json(accountPayload(subscription, account?.seniorFirstName ?? null, account?.relationship));
+ } catch (error) {
+  return res.status((error as Error & { status?: number }).status ?? 500).json({ error: error instanceof Error ? error.message : "Couldn't save your number." });
+ }
 });

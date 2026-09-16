@@ -15,6 +15,8 @@ import {
 } from "./lib/cronJobOrg";
 import { authenticateApiKey } from "./middleware/auth";
 import { loadActiveTopicsForUser } from "./topics";
+import { findSubscriptionByPhone } from "./lib/subscriptions";
+import { canPlaceFamilyCall } from "./lib/checkinPolicy";
 
 type CallingPreferenceInput = {
 	weekdays?: unknown;
@@ -34,7 +36,7 @@ type CallingPreference = {
 	agent_phone_number: string | null;
 };
 
-type UserRecord = {
+export type UserRecord = {
 	id: string;
 	phone_number: string;
 	language: string | null;
@@ -356,6 +358,7 @@ app.post("/api/saveCallingPreference", authenticateApiKey, async (req, res) => {
 		});
 	}
 
+	if (rawPreferences.length < 1 || rawPreferences.length > 28) return res.status(400).json({ error: "Provide between 1 and 28 calling windows." });
 	const normalized = rawPreferences.map(normalizePreferenceInput);
 	const invalid = normalized.find(
 		(preference): preference is { error: string } => "error" in preference,
@@ -374,16 +377,12 @@ app.post("/api/saveCallingPreference", authenticateApiKey, async (req, res) => {
 		};
 	});
 
-	const { data, error } = await supabase
-		.from("calling_preferences")
-		.insert(rows)
-		.select("id");
-
+	const { data, error } = await supabase.rpc("replace_friendly_call_preferences", { target_user: user.id, windows: rows });
 	if (error) return res.status(500).json({ error: error.message });
 
 	res.json({
 		message: "Calling preference saved successfully",
-		preference_ids: (data ?? []).map((row) => row.id),
+		preference_ids: (data ?? []).map((row: { id: string }) => row.id),
 	});
 });
 
@@ -607,12 +606,20 @@ app.get("/api/webhook/call-user", authenticateApiKey, async (req, res) => {
 
 	const { data: user, error: userError } = await supabase
 		.from("users")
-		.select("id, phone_number, language, nickname_vocative, first_name_vocative, agent_voice_id, agent_gender")
+		.select("id, phone_number, language, nickname_vocative, first_name_vocative, agent_voice_id, agent_gender, timezone")
 		.eq("id", preference.user_id)
 		.maybeSingle();
 
 	if (userError) return res.status(500).json({ error: userError.message });
 	if (!user?.phone_number) return res.status(404).json({ error: "User not found" });
+	const familySubscription = await findSubscriptionByPhone(user.phone_number);
+	if (familySubscription && familySubscription.senior_phone_number === user.phone_number) {
+		const { data: consent, error: consentError } = await supabase.from("daily_checkin_preferences").select("*").eq("subscription_id", familySubscription.id).maybeSingle();
+		if (consentError) return res.status(500).json({ error: consentError.message });
+		if (!canPlaceFamilyCall(consent, familySubscription, process.env.DAILY_CHECKINS_ENABLED === "true")) {
+			return res.json({ message: "Friendly call skipped because family calling is disabled, the schedule is unconfirmed, or the plan is inactive." });
+		}
+	}
 
 	const agentId =
 		preference.agent_id ||
@@ -638,6 +645,27 @@ app.get("/api/webhook/call-user", authenticateApiKey, async (req, res) => {
 	}
 
 	try {
+		const callId = await initiateFriendlyCall(user, agentId, agentPhoneNumber);
+		const subscription = familySubscription;
+		if (subscription && subscription.senior_phone_number === user.phone_number && subscription.status === "active") {
+			const activeSubscription = subscription;
+			const { data: reportPrefs } = await supabase.from("daily_checkin_preferences").select("timezone,calls_consent_at,consent_senior_phone").eq("subscription_id", activeSubscription.id).maybeSingle();
+			if (reportPrefs?.calls_consent_at && reportPrefs.consent_senior_phone === user.phone_number) {
+				const local = timeZoneParts(new Date(), reportPrefs.timezone || user.timezone || "UTC");
+				const localDate = `${local.year}-${String(local.month).padStart(2,"0")}-${String(local.day).padStart(2,"0")}`;
+				await supabase.from("daily_checkin_runs").upsert({ subscription_id: activeSubscription.id, senior_phone: user.phone_number, local_date: localDate, call_id: callId }, { onConflict: "call_id" });
+			}
+		}
+		res.json({ message: "Call initiated successfully" });
+	} catch (error) {
+		console.error("Error making friendly call:", error);
+		res.status(500).json({ error: "Internal server error" });
+	}
+});
+
+export async function initiateFriendlyCall(user: UserRecord, agentId: string, agentPhoneNumber: string) {
+	const agentPhoneNumberId = getAgentPhoneNumberId(agentPhoneNumber);
+	if (!agentPhoneNumberId) throw new Error("Agent phone number is not configured");
 		const topics = await loadActiveTopicsForUser(user.id);
 		const language = user.language || "cs";
 		const name = user.nickname_vocative || user.first_name_vocative || "";
@@ -669,17 +697,14 @@ app.get("/api/webhook/call-user", authenticateApiKey, async (req, res) => {
 					to_number: user.phone_number,
 					conversation_initiation_client_data: conversationInitiationClientData,
 				}),
+				signal: AbortSignal.timeout(20000),
 			},
 		);
 
 		if (!response.ok) {
-			console.error("ElevenLabs friendly call error:", await response.text());
-			return res.status(500).json({ error: "Failed to make call" });
+			throw new Error(`ElevenLabs call failed (${response.status})`);
 		}
-
-		res.json({ message: "Call initiated successfully" });
-	} catch (error) {
-		console.error("Error making friendly call:", error);
-		res.status(500).json({ error: "Internal server error" });
-	}
-});
+		const result = await response.json() as { conversation_id?: string };
+		if (!result.conversation_id) throw new Error("Call outcome is unknown");
+		return result.conversation_id;
+}
