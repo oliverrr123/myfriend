@@ -26,7 +26,7 @@ node scripts/prepare-family-digest-overlay.mjs LIVE_SNAPSHOT NEW_OUTPUT_DIR IMMU
 flyctl deploy NEW_OUTPUT_DIR --app api-nameless-water-1932 --remote-only
 ```
 
-The script verifies dependency parity, copies only family/digest modules, and patches only the digest event hook in the live entrypoint. Its manifest records changed and preserved hashes. The release does not enable `FAMILY_MESSAGING_ENABLED`, `CHECKIN_REPORTS_ENABLED`, `DAILY_CHECKINS_ENABLED`, or the report cron. Automatic delivery still requires a separately verified activation with current consent and an authorized recipient.
+The script verifies dependency parity, copies only family/digest modules, and patches only the digest event hook in the live entrypoint. Its manifest records changed and preserved hashes. Deployment does not change activation settings automatically. Production was explicitly activated on September 16, 2026, as recorded below. Preserve current activation settings on future releases; consent and recipient eligibility still apply.
 
 ## Unanswered-only days
 
@@ -51,4 +51,15 @@ At the usual 20:00 cutoff, a day with no call events can produce an explanation 
 
 Quiet-day claims record the preference version. Changes during generation invalidate stale explanations. Sharing consent, linked numbers, recipient consent and billing are checked again before delivery. Pause/decline notice ownership also prevents duplicate notices and retries after an uncertain send. No private free-text explanation is stored or forwarded.
 
-`tests/quiet-day-database.sql` contains database assertions intended to run inside `BEGIN`/`ROLLBACK`, covering independent consent, no repeat notices, schedule overlap, DST, expiration, wrong callers and private RPC permissions. These passed against the applied migration using temporary fixtures that were rolled back. Security advisor results were unchanged. Production verification matched all 18 overlay files and seven preserved live modules; all three automatic-sending flags remain false.
+`tests/quiet-day-database.sql` contains database assertions intended to run inside `BEGIN`/`ROLLBACK`, covering independent consent, no repeat notices, schedule overlap, DST, expiration, wrong callers and private RPC permissions. These passed against the applied migration using temporary fixtures that were rolled back. Security advisor results were unchanged. Production verification matched all 18 overlay files and seven preserved live modules; all three automatic-sending flags were false at that release’s initial verification; see the subsequent production activation below.
+
+
+## Production activated — September 16, 2026
+
+The owner explicitly authorized full production activation for paying customers. `FAMILY_MESSAGING_ENABLED`, `CHECKIN_REPORTS_ENABLED`, and `DAILY_CHECKINS_ENABLED` are now `true` on both Fly machines. `FAMILY_MESSAGING_PROVIDER=photon`; there is no owner-only recipient restriction. The deployed code and preserved voice/calling modules match the verified release hashes. Photon is connected and the authenticated family-status endpoint reports available.
+
+Existing report cron `8426267` is enabled every five minutes, retaining its URL, authentication, and schedule. An authenticated worker invocation using the saved cron headers returned HTTP 200 with zero submitted digests (none was due). Existing friendly-call generator `7679596` remains enabled at 00:05 UTC; no duplicate generator or call jobs were created. The ordinary call scheduler continues to enforce the linked caller’s saved permission and schedule.
+
+A single setup-test message sent through the production Photon transport to the owner-authorized Czech number was accepted by the provider (`spc-msg-28527720-2d21-4ea7-9772-08a5a645b6ed`). Provider acceptance is not a handset delivery receipt. No customer summaries were fabricated or sent early for this test. Daily messages remain due at 20:00 in each recipient’s saved timezone, with opt-out, sharing consent, active subscription, linked numbers and connection checks. Currently the owner’s family account is eligible, with America/Los_Angeles as its timezone. Other customers become eligible through their own completed setup and permissions.
+
+The currently enabled transport is Photon/iMessage. Twilio SMS, WhatsApp and Telegram were not enabled by this activation.
