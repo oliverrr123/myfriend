@@ -13,7 +13,7 @@ npm run build
 npx tsx --test src/lib/checkinPolicy.test.ts src/lib/familyAssistantPolicy.test.ts tests/*.test.mjs
 ```
 
-The release passes 62 focused backend tests. `scripts/evaluate-family-digest.ts` runs eight separately labelled synthetic live-model checks. The preview scripts take a local ElevenLabs export and never import database/delivery code. Real exports and previews must stay outside Git.
+The release passes 67 focused backend tests. `scripts/evaluate-family-digest.ts` runs eight separately labelled synthetic live-model checks. The preview scripts take a local ElevenLabs export and never import database/delivery code. Real exports and previews must stay outside Git.
 
 ## Deployment
 
@@ -27,3 +27,11 @@ flyctl deploy NEW_OUTPUT_DIR --app api-nameless-water-1932 --remote-only
 ```
 
 The script verifies dependency parity, copies only family/digest modules, and patches only the digest event hook in the live entrypoint. Its manifest records changed and preserved hashes. The release does not enable `FAMILY_MESSAGING_ENABLED`, `CHECKIN_REPORTS_ENABLED`, `DAILY_CHECKINS_ENABLED`, or the report cron. Automatic delivery still requires a separately verified activation with current consent and an authorized recipient.
+
+## Unanswered-only days
+
+If a digest has attempts but no answered calls, it uses a deterministic, relationship-aware check-in nudge: “Hey, I tried calling your grandma today but couldn't reach her. You might want to give her a call to check in.” It omits the normal evening closing and never infers illness or missed medication. One answered call keeps the ordinary digest; no activity sends nothing. This remains one daily message at the usual cutoff, not an immediate alert.
+
+The signed ElevenLabs `call_initiation_failure` event records confirmed outbound `no-answer` and `busy` attempts. Unknown/provider errors are ignored. Silent inbound calls are not outbound attempts; ordinary mentions of voicemail are still answered conversations. Existing consent/linkage checks and conversation-ID deduplication also apply to failed attempts. The failure timestamp is the provider's event time, since failure payloads do not provide a conversation start time.
+
+After deploying the handler, `API_URL=https://your-api node scripts/enable-unanswered-call-events.mjs` adds failure events to the existing agent webhook subscriptions, verifies the HMAC destination, and checks that voice and other platform settings remain unchanged. It does not initiate calls, send messages, or enable report delivery. Event format: https://elevenlabs.io/docs/eleven-agents/workflows/post-call-webhooks

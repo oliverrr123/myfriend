@@ -60,3 +60,32 @@ test('webhook records all call types idempotently, without raw text or pre-conse
  await recorder.recordDailyDigestEvent({...call,conversation_id:'revoked'});
  assert.equal(rows.size,3);
 });
+
+
+const failure={type:'call_initiation_failure',event_timestamp:Date.parse('2026-09-14T17:00:00Z')/1000,data:{conversation_id:'missed',failure_reason:'no-answer',metadata:{type:'twilio',body:{Direction:'outbound-api',CallStatus:'no-answer',To:'+12025550124'}}}};
+test('confirmed missed outbound calls use the failure event; technical failures never imply a missed answer',()=>{
+ const call=facts.unansweredFailureCall(failure);assert.equal(call.metadata.phone_call.external_number,'+12025550124');assert.equal(facts.digestCallFacts(call).answered,false);
+ const busy={...failure,data:{...failure.data,failure_reason:'busy',metadata:{type:'sip',body:{to_number:'+12025550124'}}}};
+ assert(facts.unansweredFailureCall(busy));
+ for(const event of [null,{}, {...failure,type:'post_call_audio'}, {...failure,event_timestamp:NaN}, {...failure,event_timestamp:Date.now()/1000+3600}, {...failure,data:{...failure.data,failure_reason:'unknown'}}, {...failure,data:{...failure.data,metadata:{type:'twilio',body:{...failure.data.metadata.body,CallStatus:'failed'}}}}, {...failure,data:{...failure.data,metadata:{type:'twilio',body:{...failure.data.metadata.body,Direction:'inbound'}}}}, {...failure,data:{...failure.data,metadata:{type:'sip',body:{to_number:'invalid'}}}}])assert.equal(facts.unansweredFailureCall(event),null);
+});
+test('a human mentioning voicemail or replying after a greeting is an answered call',()=>{
+ const base={conversation_id:'x',metadata:{start_time_unix_secs:1,call_duration_secs:30}};
+ for(const transcript of [[{role:'user',message:'I listened to my voicemail today.'}],[{role:'user',message:'You have reached my voicemail.'},{role:'user',message:'Hello, I picked up, how are you?'}]])assert.equal(facts.digestCallFacts({...base,transcript}).answered,true);
+});
+test('failed attempts are deduplicated, consent-gated and do not retain provider metadata',async()=>{
+ const rows=new Map();let reads=0;
+ const sub={id:'sub',status:'active',senior_phone_number:'+12025550124'};
+ const prefs={enabled:true,report_channel:'messages',consent_senior_phone:sub.senior_phone_number,calls_consent_at:'2026-09-01',reports_consent_at:'2026-09-01',recipient_consent_at:'2026-09-01'};
+ const db={from(table){reads++;return table==='daily_checkin_preferences'?{select(){return this},eq(){return this},maybeSingle:async()=>({data:prefs})}:{upsert:async(value)=>{if(!rows.has(value.call_id))rows.set(value.call_id,value);return{error:null}}}}};
+ const recorder=load('src/lib/dailyDigestEvents.ts',{'./supabase':{supabase:db},'./subscriptions':{findSubscriptionByPhone:async()=>sub},'./checkinPolicy':load('src/lib/checkinPolicy.ts')});
+ await recorder.recordUnansweredDigestEvent(failure);await recorder.recordUnansweredDigestEvent(failure);
+ assert.equal(rows.size,1);assert.equal(rows.get('missed').answered,false);
+ assert.doesNotMatch(JSON.stringify([...rows.values()]),/CallStatus|Direction|transcript|summary|failure_reason/);
+ const before=reads;
+ await recorder.recordDailyDigestEvent({...facts.unansweredFailureCall(failure),metadata:{...facts.unansweredFailureCall(failure).metadata,phone_call:{external_number:sub.senior_phone_number,direction:'inbound'}}});
+ assert.equal(reads,before);
+ prefs.reports_consent_at=null;
+ await recorder.recordUnansweredDigestEvent({...failure,data:{...failure.data,conversation_id:'revoked'}});
+ assert.equal(rows.size,1);
+});

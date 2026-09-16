@@ -38,6 +38,11 @@ export async function writeDailyDigest(events: SafeDigestEvent[], relationship: 
   const voice = digestVoice(relationship);
   const { label } = voice;
   const answered = unique.filter(e => e.answered).length;
+  if (!answered) {
+    // This is a factual check-in nudge, not a health judgement or an AI inference.
+    // Keep it deterministic and omit the normal cheerful closing.
+    return { message: `Hey, I tried calling your ${label} today but couldn't reach ${voice.object}. You might want to give ${voice.object} a call to check in.` as ApprovedDigestMessage, generated:false };
+  }
   const unanswered = unique.length - answered;
   // Give the writer just two recent highlights, rather than a repetitive list from every call.
   const highlights = new Map<string, string[]>();
@@ -59,7 +64,7 @@ export async function writeDailyDigest(events: SafeDigestEvent[], relationship: 
       medication_report: e.answered && e.reminder_type === 'medication' ? e.medication_report ?? 'not_confirmed' : 'not_confirmed',
     })),
   };
-  const intro = answered ? `Hey! I chatted with your ${label} today.` : `Hey! I tried calling your ${label} today, but I didn't hear back.`;
+  const intro = `Hey! I chatted with your ${label} today.`;
   const closing = digestClosing(relationship, unique.map(e=>e.call_id), answered > 0);
   const assemble = (body = '') => [intro, body, closing].filter(Boolean).join(' ') as ApprovedDigestMessage;
   const approvedEvents = unique.map(e=>({...e, details:highlights.get(e.call_id) ?? []}));

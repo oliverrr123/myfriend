@@ -77,7 +77,7 @@ test('medication writer sees distinct reported-taken and planned statuses',async
 test('no facts stay brief, unknown relationship falls back, unanswered calls never become chats',async()=>{
  const w=writer([null]);assert.equal(await w.writeDailyDigest([]),null);
  const output=await w.writeDailyDigest([{...safe,answered:false}],'<script>Grandma</script>');
- assert.match(output.message,/loved one/);assert.match(output.message,/didn't hear back/);assert.doesNotMatch(output.message,/grandma|had a call|diagnosis/i);
+ assert.match(output.message,/loved one/);assert.match(output.message,/couldn't reach/);assert.doesNotMatch(output.message,/grandma|had a call|diagnosis/i);
 });
 test('overlong and contact-bearing drafts are rejected before review',async()=>{
  for(const text of ['Hey '+ 'word '.repeat(100),'Hey visit https://example.com','Contact +12345678901']){
@@ -194,4 +194,19 @@ test('source context prevents disguising an adult-only club as a generic social 
 test('one bounded style repair can preserve AI prose without losing approved facts',async()=>{
  const result=await writer([{body:'We discussed dinner.'},{body:'She told me about making dinner.'},{approved:true}]).writeDailyDigest([safe],'grandmother');
  assert.equal(result.generated,true);assert.match(result.message,/She told me about making dinner/);
+});
+
+
+test('unanswered-only days get a gentle check-in nudge without AI, reassurance or a cheerful closing',async()=>{
+ for(const [relationship,label,object] of [['grandmother','grandma','her'],['grandfather','grandpa','him'],[null,'loved one','them']]){
+  for(const count of [1,3]){
+   const inputs=[];
+   const result=await writer([],inputs).writeDailyDigest(Array.from({length:count},(_,i)=>({...safe,call_id:'missed-'+i,answered:false})),relationship);
+   assert.equal(result.message,`Hey, I tried calling your ${label} today but couldn't reach ${object}. You might want to give ${object} a call to check in.`);
+   assert.equal(inputs.length,0);assert.doesNotMatch(result.message,/dinner|medication|lovely|nice evening|emergency|danger|fine|safe/);
+  }
+ }
+ const mixed=await writer([{body:'She told me about dinner.'},{approved:true}]).writeDailyDigest([{...safe,call_id:'missed',answered:false},safe],'grandmother');
+ assert.doesNotMatch(mixed.message,/couldn't reach|check in/);assert.match(mixed.message,/chatted with your grandma/);
+ assert.equal(await writer([]).writeDailyDigest([]),null);
 });

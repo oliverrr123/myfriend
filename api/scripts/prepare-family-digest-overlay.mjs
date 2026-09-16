@@ -19,11 +19,23 @@ const importMarker='const checkins_1 = require("./checkins");';
 const eventMarker='        const { data: user, error: userError } = await supabase_1.supabase\n            .from("users")';
 assert.equal(index.split(importMarker).length,2);
 assert.equal(index.split(eventMarker).length,2);
-assert(!index.includes('dailyDigestEvents'),'Already patched; inspect live source before preparing another overlay');
 const importPatch='\nconst dailyDigestEvents_1 = require("./lib/dailyDigestEvents");';
 const eventPatch='        try { await (0, dailyDigestEvents_1.recordDailyDigestEvent)(event.data); }\n        catch { return res.status(503).json({error:"Could not record daily digest event."}); }\n';
-index=index.replace(importMarker,importMarker+importPatch).replace(eventMarker,eventPatch+eventMarker);
-assert.equal(index.replace(importPatch,'').replace(eventPatch,''),original,'Only digest webhook integration may change the live entrypoint');
+const additions=[];
+if (!index.includes('dailyDigestEvents_1')) {
+  index=index.replace(importMarker,importMarker+importPatch).replace(eventMarker,eventPatch+eventMarker);
+  additions.push(importPatch,eventPatch);
+} else {
+  assert(index.includes(importPatch.trim()) && index.includes(eventPatch),'Unexpected existing digest integration; inspect before patching');
+}
+const failureMarker="    if (event.type === 'post_call_transcription') {";
+const failurePatch="    if (event.type === 'call_initiation_failure') {\n        try { await (0, dailyDigestEvents_1.recordUnansweredDigestEvent)(event); }\n        catch { return res.status(503).json({error:\"Could not record unanswered call.\"}); }\n        return res.status(200).json({received:true});\n    }\n";
+assert.equal(index.split(failureMarker).length,2);
+if (!index.includes('recordUnansweredDigestEvent')) {
+  index=index.replace(failureMarker,failurePatch+failureMarker);
+  additions.push(failurePatch);
+} else assert(index.includes(failurePatch),'Unexpected existing unanswered-call integration');
+assert.equal(additions.reduce((text,addition)=>text.replace(addition,''),index),original,'Only digest webhook integration may change the live entrypoint');
 fs.mkdirSync(path.join(output,'dist/lib'),{recursive:true});
 for(const file of files)fs.copyFileSync(path.join(api,'dist',file),path.join(output,'dist',file));
 fs.writeFileSync(path.join(output,'dist/index.js'),index);

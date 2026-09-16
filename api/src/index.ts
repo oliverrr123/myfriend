@@ -16,7 +16,7 @@ import "./weather";
 import "./billing";
 import "./emailLogin";
 import { checkinPrompt, recordCheckinReport } from "./checkins";
-import { recordDailyDigestEvent } from "./lib/dailyDigestEvents";
+import { recordDailyDigestEvent, recordUnansweredDigestEvent } from "./lib/dailyDigestEvents";
 import { startFamilyMessaging } from "./familyMessaging";
 import { issueVerificationCode } from "./lib/phoneVerification";
 import { resolveCallAccess, type CallAccess, type CallMode } from "./lib/subscriptions";
@@ -1208,6 +1208,11 @@ app.post("/api/endCall", express.text({ type: 'application/json', limit: '25mb' 
 		return res.status(401).json({ error: 'Invalid signature' });
 	}
 
+	if (event.type === 'call_initiation_failure') {
+		try { await recordUnansweredDigestEvent(event); }
+		catch { return res.status(503).json({error:"Could not record unanswered call."}); }
+		return res.status(200).json({received:true});
+	}
 	if (event.type === 'post_call_transcription') {
 		const phoneNumber = event.data.metadata.phone_call.external_number;
 		const conversationStartedAt = new Date(
