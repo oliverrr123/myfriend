@@ -2,6 +2,7 @@
 import 'dotenv/config';
 import fs from 'node:fs';
 import assert from 'node:assert/strict';
+import { isDeepStrictEqual } from 'node:util';
 const apiUrl=process.env.API_URL;
 assert(apiUrl?.startsWith('https://') && process.env.ELEVENLABS_API_KEY && process.env.ELEVENLABS_AGENT_ID,'Configure API_URL and ElevenLabs credentials.');
 const headers={'xi-api-key':process.env.ELEVENLABS_API_KEY,'Content-Type':'application/json'};
@@ -17,15 +18,16 @@ for(const target of targets){
  const before=await api(path),webhooks=before.platform_settings?.workspace_overrides?.webhooks;
  const registeredHook=registered.find(h=>h.webhook_id===webhooks?.post_call_webhook_id);
  assert(registeredHook?.webhook_url===apiUrl+'/api/endCall' && registeredHook.auth_type==='hmac' && !registeredHook.is_disabled,'Expected an active, existing MyFriend HMAC webhook; no routing changes are performed.');
+ assert(before.platform_settings.workspace_overrides.conversation_initiation_client_data_webhook?.url===apiUrl+'/api/initCall','Expected existing call-start webhook before changing event subscriptions.');
  const events=webhooks.events??[];
  if(events.includes('call_initiation_failure')){console.log(`${target.agent_id}: failure events already enabled`);continue;}
  const backup=`/tmp/myfriend-noanswer-webhooks-${target.agent_id}-${Date.now()}.json`;
- fs.writeFileSync(backup,JSON.stringify({path,webhooks}),{mode:0o600});
- await api(path,{method:'PATCH',body:JSON.stringify({platform_settings:{workspace_overrides:{webhooks:{...webhooks,events:[...events,'call_initiation_failure']}}}})});
+ fs.writeFileSync(backup,JSON.stringify({path,platform_settings:before.platform_settings}),{mode:0o600});
+ await api(path,{method:'PATCH',body:JSON.stringify({platform_settings:{workspace_overrides:{...before.platform_settings.workspace_overrides,webhooks:{...webhooks,events:[...events,'call_initiation_failure']}}}})});
  const after=await api(path);
  assert.deepEqual(after.platform_settings.workspace_overrides.webhooks.events,[...events,'call_initiation_failure']);
  const unchanged=structuredClone(after.platform_settings);unchanged.workspace_overrides.webhooks=webhooks;
- assert.deepEqual(unchanged,before.platform_settings,'An unrelated platform setting changed; inspect the saved backup.');
- assert.deepEqual(after.conversation_config,before.conversation_config,'Conversation configuration unexpectedly changed.');
+ assert(isDeepStrictEqual(unchanged,before.platform_settings),'An unrelated platform setting changed; inspect the saved backup.');
+ assert(isDeepStrictEqual(after.conversation_config,before.conversation_config),'Conversation configuration unexpectedly changed.');
  console.log(`${target.agent_id}: failure events enabled; all other settings verified unchanged`);
 }
