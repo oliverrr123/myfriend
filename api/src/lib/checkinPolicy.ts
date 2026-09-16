@@ -1,4 +1,8 @@
 export type CheckinPreferences = {
+  call_status?: "not_set" | "accepted" | "declined" | "paused";
+  call_pause_until?: string | null;
+  call_status_changed_at?: string | null;
+  call_preference_version?: string;
 	enabled: boolean;
 	timezone: string;
 	call_hour: number;
@@ -19,13 +23,16 @@ export function parseCheckinPreferences(value: unknown): Pick<CheckinPreferences
 	return { enabled: p.enabled, timezone: p.timezone, call_hour: p.call_hour, report_channel: p.report_channel };
 }
 
-export function canCheckIn(p: CheckinPreferences, subscription: { status: string; senior_phone_number: string | null }) {
-	return p.enabled && subscription.status === "active" && !!subscription.senior_phone_number &&
+export function canCheckIn(p: CheckinPreferences, subscription: { status: string; senior_phone_number: string | null }, now = new Date()) {
+  const statusAllows = !p.call_status || p.call_status === "accepted" ||
+    (p.call_status === "paused" && !!p.call_pause_until && Date.parse(p.call_pause_until) <= now.getTime());
+	return statusAllows && p.enabled && subscription.status === "active" && !!subscription.senior_phone_number &&
 		p.consent_senior_phone === subscription.senior_phone_number && !!p.calls_consent_at;
 }
 
 export function canShareReport(p: CheckinPreferences, subscription: { status: string; senior_phone_number: string | null }) {
-	return canCheckIn(p, subscription) && !!p.reports_consent_at;
+	return p.enabled && subscription.status === "active" && !!subscription.senior_phone_number &&
+    p.consent_senior_phone === subscription.senior_phone_number && !!p.reports_consent_at;
 }
 
 export function canPlaceFamilyCall(p: CheckinPreferences | null, subscription: { status: string; senior_phone_number: string | null }, rolloutEnabled: boolean) {

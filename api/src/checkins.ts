@@ -1,3 +1,4 @@
+import { parseCallChoice } from "./lib/quietDayDigest";
 import { app } from "./app";
 import { authenticateApiKey } from "./middleware/auth";
 import { supabase } from "./lib/supabase";
@@ -117,22 +118,18 @@ app.post("/api/account/checkins", authenticateApiKey, async (req, res) => {
 // Voice-agent tool: only the linked grandparent's call can grant consent.
 app.post("/api/confirmDailyCheckins", authenticateApiKey, async (req, res) => {
 	const phone = resolveCallParticipantsFromBody(req.body).userPhoneNumber;
-	if (!phone || typeof req.body.allow_calls !== "boolean" || typeof req.body.allow_reports !== "boolean") return res.status(400).json({ error: "Missing explicit choices." });
-	try {
-		const subscription = await findSubscriptionByPhone(phone);
-		if (!subscription || subscription.senior_phone_number !== phone || subscription.status !== "active") return res.status(403).json({ error: "Only the linked loved one can confirm." });
-		const { data: prefs, error: readError } = await supabase.from("daily_checkin_preferences").select("*").eq("subscription_id", subscription.id).maybeSingle();
-		if (readError) throw readError;
-		if (!prefs) return res.json({ ok: false, message: "No family friendly-call request is set up yet." });
-		const now = new Date().toISOString();
-		const { error } = await supabase.from("daily_checkin_preferences").update({ consent_senior_phone: phone, calls_consent_at: req.body.allow_calls ? now : null, reports_consent_at: req.body.allow_reports ? now : null, updated_at: now }).eq("subscription_id", subscription.id);
-		if (error) throw error;
-		if (!req.body.allow_calls && subscription.senior_user_id) {
-			const { error: deleteError } = await supabase.from("calling_preferences").delete().eq("user_id", subscription.senior_user_id);
-			if (deleteError) throw deleteError;
-		}
-		return res.json({ ok: true, message: `Friendly calls ${req.body.allow_calls ? "accepted" : "declined"}; sharing updates ${req.body.allow_reports ? "accepted" : "declined"}.` });
-	} catch { return res.status(503).json({ error: "Could not save their choices." }); }
+  const choice = parseCallChoice(req.body);
+  if (!phone || !choice) return res.status(400).json({ error: "Provide an explicit call choice or sharing choice. Pauses need a valid future date or no end date." });
+  try {
+    const subscription = await findSubscriptionByPhone(phone);
+    if (!subscription || subscription.senior_phone_number !== phone || subscription.status !== "active") return res.status(403).json({ error: "Only the linked loved one can confirm." });
+    const { data, error } = await supabase.rpc("set_family_call_choices", {
+      p_subscription_id: subscription.id, p_phone: phone,
+      p_call_status: choice.status, p_allow_reports: choice.reports, p_pause_until: choice.pauseUntil,
+    });
+    if (error) throw error;
+    return res.json({ ok: true, choices: data, message: "Saved their explicit choices. Unspecified choices were preserved." });
+  } catch { return res.status(503).json({ error: "Could not save their choices." }); }
 });
 
 export async function checkinPrompt(phone: string) {
@@ -147,7 +144,7 @@ export async function checkinPrompt(phone: string) {
 		const buyerName = buyer?.nickname || buyer?.first_name;
 		const familyName = buyerName ? `${buyerName}${relationship ? `, your ${relationship}` : ""}` : relationship ? `your ${relationship}` : "the family member who set up your plan";
 		const suggestion = p.proposed_schedule ? JSON.stringify(p.proposed_schedule) : `around ${p.call_hour}:00 in ${p.timezone}`;
-		return `\nFAMILY FRIENDLY-CALL SETUP: ${familyName} set up this plan and suggested these possible calling times: ${suggestion}. This is only their suggestion; the caller decides whether and when you may call. Explain naturally that ${familyName} set you up for friendly conversations. Ask when THEY would like calls, then use saveCallingPreference with their answer so it becomes authoritative. Never silently accept the family's proposed time. Separately ask whether they agree to share a short, privacy-conscious note with ${familyName} in one daily message at 20:00 in the family recipient’s timezone, covering ordinary chats and reminder-call activity without private details${p.report_channel !== "none" ? "; they requested updates" : ""}. Existing call consent: ${!!p.calls_consent_at && p.consent_senior_phone === phone}; existing sharing consent: ${!!p.reports_consent_at && p.consent_senior_phone === phone}. Use confirmDailyCheckins after clear sharing and call choices. Respect a no and allow either choice to be revoked. Occasionally and gently encourage them to call ${familyName}, when it fits the conversation; never make this a scripted ending. Friendly calls are ordinary conversations, not medical checks or monitoring.\n`;
+		return `\nFAMILY FRIENDLY-CALL SETUP: ${familyName} set up this plan and suggested these possible calling times: ${suggestion}. This is only their suggestion; the caller decides whether and when you may call. Explain naturally that ${familyName} set you up for friendly conversations. Ask when THEY would like calls, then use saveCallingPreference with their answer so it becomes authoritative. Never silently accept the family's proposed time. Separately ask whether they agree to share a short, privacy-conscious note with ${familyName} in one daily message at 20:00 in the family recipient’s timezone, covering ordinary chats and reminder-call activity without private details${p.report_channel !== "none" ? "; they requested updates" : ""}. Existing call consent: ${!!p.calls_consent_at && p.consent_senior_phone === phone}; existing sharing consent: ${!!p.reports_consent_at && p.consent_senior_phone === phone}. Use confirmDailyCheckins after clear choices. Calls and family sharing are independent: declining or pausing calls does not revoke sharing. Only send the choice they actually made; omit other fields to preserve them. For a temporary pause pass call_status=paused and pause_until as an ISO timestamp with timezone (omit it for an indefinite pause). Never infer a refusal from silence. Use call_status=accepted to resume their existing confirmed schedule, or saveCallingPreference for new times. Never save a private explanation or invent a pause end date. Current saved call status: ${p.call_status ?? "not_set"}; pause until: ${p.call_pause_until ?? "none"}. Respect a no and allow either choice to be revoked. Occasionally and gently encourage them to call ${familyName}, when it fits the conversation; never make this a scripted ending. Friendly calls are ordinary conversations, not medical checks or monitoring.\n`;
 	} catch { return ""; }
 }
 

@@ -56,7 +56,6 @@ export function sharingContext(
     seniorPhone,
     p?.enabled,
     p?.consent_senior_phone,
-    p?.calls_consent_at,
     p?.reports_consent_at,
   ]);
 }

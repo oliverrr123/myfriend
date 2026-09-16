@@ -1,3 +1,4 @@
+import { quietDayMessage, type QuietContext } from "./quietDayDigest";
 import { supabase } from "./supabase";
 import { canShareReport } from "./checkinPolicy";
 import { sharingContext } from "./familyAssistantPolicy";
@@ -53,14 +54,25 @@ export async function processDailyDigests(deps = { db: supabase, write: writeDai
         const { data: onboarding, error: oError } = await db.from("onboarding_submissions").select("answers").eq("subscription_id", sub.id).order("created_at", { ascending: false }).limit(1).maybeSingle();
         if (oError) throw oError;
         const written = await deps.write(safe, onboarding?.answers?.relationship);
-        const message = written?.message;
+        const quiet = digest.quiet_context as QuietContext | null;
+        const notice = quietDayMessage(quiet, onboarding?.answers?.relationship);
+        const message = written?.message
+            ? (notice && quiet?.kind !== "off_day" ? `${written.message} ${notice}` as typeof written.message : written.message)
+            : notice;
         const { data: latest, error: lError } = await db.from("daily_checkin_preferences").select("*, subscriptions(*)").eq("subscription_id", sub.id).single();
         if (lError)
             throw lError;
         const current = latest?.subscriptions;
         const currentStamp = current && JSON.stringify([sharingContext(latest, current.senior_phone_number), latest.recipient_consent_at, current.buyer_phone_number]);
         const allowed = current && current.buyer_phone_number === digest.recipient_phone && current.senior_phone_number === digest.senior_phone && canShareReport(latest, current) && latest.report_channel === "messages" && latest.recipient_consent_at && currentStamp === digest.consent_context;
-        if (!allowed || !message) {
+        // Do not explain a quiet day using a preference that changed while we generated the digest.
+        let quietStillCurrent = !quiet || (latest.call_preference_version === quiet.version && latest.call_status === quiet.status);
+        if (quietStillCurrent && quiet?.kind === "off_day") {
+            const { data: currentQuiet, error: quietError } = await db.rpc("family_quiet_day_context", { p_subscription_id: sub.id, p_start: digest.window_start, p_end: digest.window_end });
+            if (quietError) throw quietError;
+            quietStillCurrent = JSON.stringify(currentQuiet) === JSON.stringify(quiet);
+        }
+        if (!allowed || !message || !quietStillCurrent) {
             const { error } = await db.from("family_daily_digests").update({ status: "skipped" }).eq("id", digest.id).eq("status", "building").eq("claim_token", digest.claim_token);
             if (error)
                 throw error;

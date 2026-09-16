@@ -9,7 +9,7 @@ const api=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 const [snapshot,output,baseImage]=process.argv.slice(2);
 assert(snapshot && output && /^registry\.fly\.io\/[\w-]+@sha256:[a-f0-9]{64}$/.test(baseImage),'Supply snapshot, fresh output directory, immutable base image');
 assert(!fs.existsSync(output),'Output must be a new directory');
-const files=['checkins.js','familyMessaging.js','lib/checkinPolicy.js','lib/familyAssistant.js','lib/familyAssistantPolicy.js','lib/familyTestScope.js','lib/familyTransport.js','lib/reportDelivery.js','lib/dailyDigestEvents.js','lib/dailyDigestPolicy.js','lib/dailyDigestPrivacy.js','lib/dailyDigestWorker.js','lib/dailyDigestWriter.js','lib/digestContentGuard.js','lib/digestModel.js','lib/digestVoice.js'];
+const files=['checkins.js','familyMessaging.js','lib/checkinPolicy.js','lib/familyAssistant.js','lib/familyAssistantPolicy.js','lib/familyTestScope.js','lib/familyTransport.js','lib/reportDelivery.js','lib/dailyDigestEvents.js','lib/dailyDigestPolicy.js','lib/dailyDigestPrivacy.js','lib/dailyDigestWorker.js','lib/dailyDigestWriter.js','lib/digestContentGuard.js','lib/digestModel.js','lib/digestVoice.js','lib/quietDayDigest.js'];
 const installed=JSON.parse(fs.readFileSync(path.join(snapshot,'package.json'),'utf8'));
 const expected=JSON.parse(fs.readFileSync(path.join(api,'package.json'),'utf8'));
 assert.deepEqual(installed.dependencies,expected.dependencies,'Overlay must not assume new dependencies');
